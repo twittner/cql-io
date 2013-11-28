@@ -1,0 +1,13 @@
+*.swp
+*.swo
+*.hi
+*.o
+*.out
+*.prof
+dist/
+log/
+tags
+ID
+cabal.sandbox.config
+cabal-dev/
+.cabal-sandbox/
