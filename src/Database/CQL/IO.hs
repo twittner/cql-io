@@ -3,10 +3,12 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 module Database.CQL.IO
-    ( runQuery
-    , runQuery_
-    , runPrepare
-    , runExecute
+    ( query
+    , query_
+    , prepare
+    , execute
+    , register
+    , batch
     , module M
     ) where
 
@@ -14,28 +16,28 @@ import Control.Monad
 import Database.CQL.Protocol
 import Database.CQL.IO.Client as M
 
-runQuery :: (Tuple a, Tuple b) => Query a b -> Client [b]
-runQuery q = do
-    r <- query q
+query :: (Tuple a, Tuple b) => Query a b -> Client [b]
+query q = do
+    r <- query' q
     case r of
         RsResult _ (RowsResult _ b) -> return b
         _                           -> return []
   where
-    query :: (Tuple a, Tuple b) => Query a b -> Client (Response a b)
-    query = request
+    query' :: (Tuple a, Tuple b) => Query a b -> Client (Response a b)
+    query' = request
 
-runQuery_ :: (Tuple a) => Query a () -> Client ()
-runQuery_ q = void (runQuery q :: Client [()])
+query_ :: (Tuple a) => Query a () -> Client ()
+query_ q = void (query q)
 
-runPrepare :: (Tuple a, Tuple b) => QueryString a b -> Client (QueryId a b)
-runPrepare q = do
+prepare :: (Tuple a, Tuple b) => QueryString a b -> Client (QueryId a b)
+prepare q = do
     r <- request (Prepare q)
     case r of
         RsResult _ (PreparedResult i _ _) -> return i
         _                                 -> fail "unexpected response"
 
-runExecute :: (Tuple a, Tuple b) => QueryId a b -> QueryParams a -> Client [b]
-runExecute q p = do
+execute :: (Tuple a, Tuple b) => QueryId a b -> QueryParams a -> Client [b]
+execute q p = do
     r <- exec (Execute q p)
     case r of
         RsResult _ (RowsResult _ b) -> return b
@@ -43,3 +45,9 @@ runExecute q p = do
   where
     exec :: (Tuple a, Tuple b) => Execute a b -> Client (Response a b)
     exec = request
+
+batch :: Consistency -> BatchType -> [BatchQuery] -> Client ()
+batch c t q = command (Batch t q c)
+
+register :: [EventType] -> Client ()
+register = command . Register

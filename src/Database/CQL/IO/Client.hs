@@ -14,6 +14,7 @@ module Database.CQL.IO.Client
     , receive
     , receive_
     , request
+    , command
     , supportedOptions
     , uncompressed
     , compression
@@ -130,6 +131,9 @@ receive_ = receive
 
 request :: (Request r, Tuple a, Tuple b) => r -> Client (Response a b)
 request a = send a >> receive
+
+command :: (Request r) => r -> Client ()
+command r = void (request r :: Client (Response () ()))
 
 uncompressed :: Client a -> Client a
 uncompressed m = do
