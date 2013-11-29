@@ -14,6 +14,8 @@ module Database.CQL.IO.Client
     , receive
     , receive_
     , request
+    , supportedOptions
+    , uncompressed
     , compression
     ) where
 
@@ -21,7 +23,7 @@ import Control.Applicative
 import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Reader
-import Data.ByteString.Lazy hiding (pack, unpack)
+import Data.ByteString.Lazy hiding (pack, unpack, elem)
 import Data.Pool hiding (Pool)
 import Data.Time
 import Data.Word
@@ -31,6 +33,8 @@ import System.IO
 
 import qualified Data.Pool as P
 
+type EventHandler = Event -> IO ()
+
 data Settings = Settings
     { setVersion     :: !CqlVersion
     , setCompression :: !Compression
@@ -38,20 +42,21 @@ data Settings = Settings
     , setPort        :: !Word16
     , setIdleTimeout :: !NominalDiffTime
     , setPoolSize    :: !Word32
-    } deriving (Show)
+    , setOnEvent     :: EventHandler
+    }
 
 data Pool = Pool
-    { _sets :: !Settings
-    , _pool :: !(P.Pool Handle)
+    { sets :: !Settings
+    , pool :: !(P.Pool Handle)
     }
 
 data Env = Env
-    { _compress   :: !Compression
-    , _connection :: !Handle
+    { conn     :: !Handle
+    , settings :: !Settings
     }
 
 newtype Client a = Client
-    { _client :: ReaderT Env IO a
+    { client :: ReaderT Env IO a
     } deriving ( Functor
                , Applicative
                , Monad
@@ -61,7 +66,8 @@ newtype Client a = Client
                )
 
 mkPool :: (Functor m, MonadIO m) => Settings -> m Pool
-mkPool s = liftIO $
+mkPool s = liftIO $ do
+    validateSettings
     Pool s <$> createPool
         connInit
         hClose
@@ -69,65 +75,98 @@ mkPool s = liftIO $
         (setIdleTimeout s)
         (setPoolSize s)
   where
+    validateSettings = do
+        Supported ca _ <- supportedOptions (setHost s) (setPort s)
+        let c = algorithm (setCompression s)
+        unless (c == None || c `elem` ca) $
+            fail $ "Compression method not supported, only: " ++ show ca
+
     connInit = do
         con <- connectTo (setHost s) (PortNumber . fromIntegral . setPort $ s)
         let cmp = setCompression s
         let req = Startup (setVersion s) (algorithm cmp)
-        hdr <- internalSend cmp req con
-        res <- internalReceive cmp hdr con :: IO (Response () ())
+        intSend cmp con req
+        res <- intReceive cmp con :: IO (Response () ())
         case res of
-            RsError _ e -> fail (show e)
+            RsError _ e -> throwM e
+            RsEvent _ e -> setOnEvent s e >> return con
             _           -> return con
 
 runClient :: (MonadIO m, MonadCatch m) => Pool -> Client a -> m a
-runClient p a = withResource (_pool p) $ \conn ->
-    liftIO (runReaderT (_client a) (Env (setCompression (_sets p)) conn))
+runClient p a = withResource (pool p) $ \c ->
+    liftIO (runReaderT (client a) (Env c (sets p)))
 
-send :: (Request a) => a -> Client Header
+supportedOptions :: MonadIO m => String -> Word16 -> m Supported
+supportedOptions h p = liftIO $
+    bracket (connectTo h (PortNumber (fromIntegral p))) hClose $ \c -> do
+        intSend noCompression c Options
+        b <- intReceive noCompression c :: IO (Response () ())
+        case b of
+            RsSupported _ s -> return s
+            RsError     _ e -> throwM e
+            _               -> fail "unexpected response"
+
+send :: (Request a) => a -> Client ()
 send r = do
-    h <- asks _connection
-    c <- asks _compress
-    liftIO $ internalSend c r h
+    c <- compression
+    h <- connection
+    liftIO $ intSend c h r
 
-receive :: (Tuple a, Tuple b) => Header -> Client (Response a b)
-receive r = do
-    h <- asks _connection
-    c <- asks _compress
-    liftIO $ internalReceive c r h
+receive :: (Tuple a, Tuple b) => Client (Response a b)
+receive = do
+    c <- compression
+    h <- connection
+    r <- liftIO $ intReceive c h
+    case r of
+        RsError _ e -> throwM e
+        RsEvent _ e -> do
+            f <- asks (setOnEvent . settings)
+            liftIO $ f e
+            receive
+        _           -> return r
 
-receive_ :: Header -> Client (Response () ())
+receive_ :: Client (Response () ())
 receive_ = receive
 
 request :: (Request r, Tuple a, Tuple b) => r -> Client (Response a b)
-request = send >=> receive
+request a = send a >> receive
+
+uncompressed :: Client a -> Client a
+uncompressed m = do
+    s <- asks settings
+    local (\e -> e { settings = s { setCompression = noCompression } }) m
 
 compression :: Client Compression
-compression = asks _compress
+compression = asks (setCompression . settings)
 
 ------------------------------------------------------------------------------
 -- Internal
 
-internalSend :: (Request a) => Compression -> a -> Handle -> IO Header
-internalSend f r h = do
+intSend :: (Request a) => Compression -> Handle -> a -> IO ()
+intSend f h r = do
     let s = StreamId 1
     c <- case getOpCode r rqCode of
-        OcStartup -> return noCompression
-        OcOptions -> return noCompression
-        _         -> return f
+            OcStartup -> return noCompression
+            OcOptions -> return noCompression
+            _         -> return f
     a <- either (fail "failed to create request") return (pack c False s r)
     hPut h a
-    b <- hGet h 8
-    case header b of
-        Left  e -> fail $ "failed to read response header: " ++ e
-        Right x -> return x
 
-internalReceive :: (Tuple a, Tuple b) => Compression -> Header -> Handle -> IO (Response a b)
-internalReceive a h c = case headerType h of
-    RqHeader -> fail "unexpected request header"
-    RsHeader -> do
-        let len = lengthRepr (bodyLength h)
-        b <- hGet c (fromIntegral len)
-        case unpack a h b of
-            Left  e -> fail $ "failed to read response body: " ++ e
-            Right x -> return x
+intReceive :: (Tuple a, Tuple b) => Compression -> Handle -> IO (Response a b)
+intReceive a c = do
+    b <- hGet c 8
+    h <- case header b of
+            Left  e -> fail $ "failed to read response header: " ++ e
+            Right h -> return h
+    case headerType h of
+        RqHeader -> fail "unexpected request header"
+        RsHeader -> do
+            let len = lengthRepr (bodyLength h)
+            x <- hGet c (fromIntegral len)
+            case unpack a h x of
+                Left  e -> fail $ "failed to read response body: " ++ e
+                Right r -> return r
+
+connection :: Client Handle
+connection = asks conn
 
