@@ -8,31 +8,37 @@ module Database.CQL.IO.Client
     ( Settings (..)
     , Pool
     , Client
+    , defSettings
     , mkPool
     , runClient
     , send
     , receive
-    , receive_
     , request
     , command
     , supportedOptions
     , uncompressed
     , compression
+    , cache
+    , cacheLookup
     ) where
 
 import Control.Applicative
 import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Reader
-import Data.ByteString.Lazy hiding (pack, unpack, elem)
+import Data.ByteString (ByteString)
+import Data.ByteString.Lazy hiding (ByteString, pack, unpack, elem)
 import Data.Pool hiding (Pool)
+import Data.Text.Lazy (Text)
 import Data.Time
 import Data.Word
 import Database.CQL.Protocol
+import Database.CQL.IO.Cache (Cache)
 import Network
 import System.IO
 
-import qualified Data.Pool as P
+import qualified Data.Pool             as P
+import qualified Database.CQL.IO.Cache as Cache
 
 type EventHandler = Event -> IO ()
 
@@ -43,6 +49,7 @@ data Settings = Settings
     , setPort        :: !Word16
     , setIdleTimeout :: !NominalDiffTime
     , setPoolSize    :: !Word32
+    , cacheSize      :: !Int
     , setOnEvent     :: EventHandler
     }
 
@@ -52,8 +59,9 @@ data Pool = Pool
     }
 
 data Env = Env
-    { conn     :: !Handle
-    , settings :: !Settings
+    { conn       :: !Handle
+    , settings   :: !Settings
+    , queryCache :: !(Cache Text ByteString)
     }
 
 newtype Client a = Client
@@ -65,6 +73,10 @@ newtype Client a = Client
                , MonadIO
                , MonadReader Env
                )
+
+defSettings :: Settings
+defSettings = let handler = const $ return () in
+    Settings Cqlv300 noCompression "localhost" 9042 60 4 128 handler
 
 mkPool :: (Functor m, MonadIO m) => Settings -> m Pool
 mkPool s = liftIO $ do
@@ -95,7 +107,7 @@ mkPool s = liftIO $ do
 
 runClient :: (MonadIO m, MonadCatch m) => Pool -> Client a -> m a
 runClient p a = withResource (pool p) $ \c ->
-    liftIO (runReaderT (client a) (Env c (sets p)))
+    liftIO . runReaderT (client a) . Env c (sets p) =<< Cache.new 1024
 
 supportedOptions :: MonadIO m => String -> Word16 -> m Supported
 supportedOptions h p = liftIO $
@@ -126,9 +138,6 @@ receive = do
             receive
         _           -> return r
 
-receive_ :: Client (Response () ())
-receive_ = receive
-
 request :: (Request r, Tuple a, Tuple b) => r -> Client (Response a b)
 request a = send a >> receive
 
@@ -142,6 +151,15 @@ uncompressed m = do
 
 compression :: Client Compression
 compression = asks (setCompression . settings)
+
+cache :: QueryString a b -> QueryId a b -> Client ()
+cache (QueryString k) (QueryId v) = asks queryCache >>= Cache.add k v
+
+cacheLookup :: QueryString a b -> Client (Maybe (QueryId a b))
+cacheLookup (QueryString k) = do
+    c <- asks queryCache
+    v <- Cache.lookup k c
+    return (QueryId <$> v)
 
 ------------------------------------------------------------------------------
 -- Internal
@@ -173,4 +191,3 @@ intReceive a c = do
 
 connection :: Client Handle
 connection = asks conn
-

@@ -3,31 +3,40 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 module Database.CQL.IO
-    ( query
-    , query_
+    ( Settings (..)
+    , Pool
+    , Client
+
+    , mkPool
+    , defSettings
+    , runClient
+    , query
     , prepare
     , execute
     , register
     , batch
-    , module M
+    , cached
+    , uncompressed
+
+    , send
+    , receive
+    , request
+    , command
+    , supportedOptions
     ) where
 
-import Control.Monad
 import Database.CQL.Protocol
-import Database.CQL.IO.Client as M
+import Database.CQL.IO.Client
 
 query :: (Tuple a, Tuple b) => Query a b -> Client [b]
 query q = do
-    r <- query' q
+    r <- req q
     case r of
         RsResult _ (RowsResult _ b) -> return b
         _                           -> return []
   where
-    query' :: (Tuple a, Tuple b) => Query a b -> Client (Response a b)
-    query' = request
-
-query_ :: (Tuple a) => Query a () -> Client ()
-query_ q = void (query q)
+    req :: (Tuple a, Tuple b) => Query a b -> Client (Response a b)
+    req = request
 
 prepare :: (Tuple a, Tuple b) => QueryString a b -> Client (QueryId a b)
 prepare q = do
@@ -45,6 +54,18 @@ execute q p = do
   where
     exec :: (Tuple a, Tuple b) => Execute a b -> Client (Response a b)
     exec = request
+
+cached :: (Tuple a, Tuple b) => QueryString a b -> QueryParams a -> Client [b]
+cached q p = do
+    i <- cacheLookup q
+    case i of
+        Nothing -> addCacheEntry >>= flip execute p
+        Just i' -> execute i' p
+  where
+    addCacheEntry = do
+        i <- prepare q
+        cache q i
+        return i
 
 batch :: Consistency -> BatchType -> [BatchQuery] -> Client ()
 batch c t q = command (Batch t q c)
