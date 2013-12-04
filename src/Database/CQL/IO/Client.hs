@@ -3,6 +3,7 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
 
 module Database.CQL.IO.Client
     ( Settings (..)
@@ -23,7 +24,8 @@ module Database.CQL.IO.Client
     ) where
 
 import Control.Applicative
-import Control.Monad.Catch
+import Control.Concurrent.Async.Class
+import Control.Exception
 import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Data.ByteString (ByteString)
@@ -69,16 +71,18 @@ newtype Client a = Client
     } deriving ( Functor
                , Applicative
                , Monad
-               , MonadCatch
                , MonadIO
                , MonadReader Env
                )
+
+instance Async Client Client where
+    async = Client . async . client
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
     Settings Cqlv300 noCompression "localhost" 9042 60 4 128 handler
 
-mkPool :: (Functor m, MonadIO m) => Settings -> m Pool
+mkPool :: (MonadIO m) => Settings -> m Pool
 mkPool s = liftIO $ do
     validateSettings
     Pool s <$> createPool
@@ -101,22 +105,22 @@ mkPool s = liftIO $ do
         intSend cmp con req
         res <- intReceive cmp con :: IO (Response () ())
         case res of
-            RsError _ e -> throwM e
+            RsError _ e -> throw e
             RsEvent _ e -> setOnEvent s e >> return con
             _           -> return con
 
-runClient :: (MonadIO m, MonadCatch m) => Pool -> Client a -> m a
-runClient p a = withResource (pool p) $ \c ->
-    liftIO . runReaderT (client a) . Env c (sets p) =<< Cache.new 1024
+runClient :: (MonadIO m) => Pool -> Client a -> m a
+runClient p a = liftIO $ withResource (pool p) $ \c ->
+    runReaderT (client a) . Env c (sets p) =<< Cache.new 1024
 
-supportedOptions :: MonadIO m => String -> Word16 -> m Supported
+supportedOptions :: (MonadIO m) => String -> Word16 -> m Supported
 supportedOptions h p = liftIO $
     bracket (connectTo h (PortNumber (fromIntegral p))) hClose $ \c -> do
         intSend noCompression c Options
         b <- intReceive noCompression c :: IO (Response () ())
         case b of
             RsSupported _ s -> return s
-            RsError     _ e -> throwM e
+            RsError     _ e -> throw e
             _               -> fail "unexpected response"
 
 send :: (Request a) => a -> Client ()
@@ -131,7 +135,7 @@ receive = do
     h <- connection
     r <- liftIO $ intReceive c h
     case r of
-        RsError _ e -> throwM e
+        RsError _ e -> throw e
         RsEvent _ e -> do
             f <- asks (setOnEvent . settings)
             liftIO $ f e
