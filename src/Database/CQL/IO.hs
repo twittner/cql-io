@@ -28,9 +28,9 @@ module Database.CQL.IO
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
 
-query :: (Tuple a, Tuple b) => Query a b -> Client [b]
-query q = do
-    r <- req q
+query :: (Tuple a, Tuple b) => QueryString a b -> QueryParams a -> Client [b]
+query q p = do
+    r <- req (Query q p)
     case r of
         RsResult _ (RowsResult _ b) -> return b
         _                           -> return []
