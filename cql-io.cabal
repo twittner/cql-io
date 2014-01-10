@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.1.0
+version:              0.2.0
 synopsis:             CQL client
 stability:            experimental
 license:              OtherLicense
@@ -37,7 +37,6 @@ library
         , base         == 4.*
         , bytestring   >= 0.10
         , containers   >= 0.5
-        , errors       == 1.4.*
         , cql          == 2.*
         , mtl          >= 2.1
         , mwc-random   == 0.13.*
