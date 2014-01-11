@@ -26,13 +26,10 @@ module Database.CQL.IO
     , executeWrite
     , executeSchema
 
-    , cached
-    , cachedWrite
-    , cachedSchema
-
     , register
     , batch
     , uncompressed
+    , uncached
 
     , send
     , receive
@@ -82,12 +79,14 @@ schema x y = do
 -- prepare
 
 prepare' :: (Tuple a, Tuple b) => QueryString k a b -> Client (QueryId k a b)
-prepare' q = do
-    r <- request (RqPrepare (Prepare q))
-    case r of
-        RsResult _ (PreparedResult i _ _) -> return i
-        RsError  _ e                      -> throw e
-        _                                 -> throw UnexpectedResponse
+prepare' q = maybe req return =<< cacheLookup q
+  where
+    req = do
+        r <- request (RqPrepare (Prepare q))
+        case r of
+            RsResult _ (PreparedResult i _ _) -> cache q i >> return i
+            RsError _ e                       -> throw e
+            _                                 -> throw UnexpectedResponse
 
 prepare :: (Tuple a, Tuple b) => QueryString R a b -> Client (QueryId R a b)
 prepare = prepare'
@@ -124,36 +123,6 @@ executeSchema q p = do
     case r of
         RsResult _ (SchemaChangeResult s) -> return s
         _                                 -> throw UnexpectedResponse
-
-------------------------------------------------------------------------------
--- cached
-
-cached :: (Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> Client [b]
-cached q p =
-    cacheLookup q
-        >>= maybe (addCacheEntry q) return
-        >>= flip execute p
-
-cachedWrite :: (Tuple a) => QueryString W a () -> QueryParams a -> Client ()
-cachedWrite q p =
-    cacheLookup q
-        >>= maybe (addCacheEntry q) return
-        >>= flip executeWrite p
-
-cachedSchema :: (Tuple a) => QueryString S a () -> QueryParams a -> Client SchemaChange
-cachedSchema q p =
-    cacheLookup q
-        >>= maybe (addCacheEntry q) return
-        >>= flip executeSchema p
-
-addCacheEntry :: (Tuple a, Tuple b) => QueryString k a b -> Client (QueryId k a b)
-addCacheEntry q = do
-    i <- prepare' q
-    cache q i
-    return i
-
-------------------------------------------------------------------------------
--- batch
 
 batch :: Consistency -> BatchType -> [BatchQuery] -> Client ()
 batch c t q = command (RqBatch (Batch t q c))
