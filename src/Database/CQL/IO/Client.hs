@@ -18,6 +18,7 @@ module Database.CQL.IO.Client
     , command
     , supportedOptions
     , uncompressed
+    , uncached
     , compression
     , cache
     , cacheLookup
@@ -57,14 +58,14 @@ data Settings = Settings
 
 data Pool = Pool
     { sets   :: !Settings
-    , qCache :: !(Cache Text ByteString)
+    , qCache :: !(Maybe (Cache Text ByteString))
     , pool   :: !(P.Pool Handle)
     }
 
 data Env = Env
     { conn       :: !Handle
     , settings   :: !Settings
-    , queryCache :: !(Cache Text ByteString)
+    , queryCache :: !(Maybe (Cache Text ByteString))
     }
 
 newtype Client a = Client
@@ -86,7 +87,7 @@ defSettings = let handler = const $ return () in
 mkPool :: (MonadIO m) => Settings -> m Pool
 mkPool s = liftIO $ do
     validateSettings
-    Pool s <$> Cache.new (cacheSize s)
+    Pool s <$> cacheInit
            <*> createPool
                 connInit
                 hClose
@@ -99,6 +100,13 @@ mkPool s = liftIO $ do
         let c = algorithm (setCompression s)
         unless (c == None || c `elem` ca) $
             fail $ "Compression method not supported, only: " ++ show ca
+        unless (cacheSize s >= 0) $
+            fail $ "Cache size must be >= 0"
+
+    cacheInit =
+        if cacheSize s > 0
+            then Just <$> Cache.new (cacheSize s)
+            else return Nothing
 
     connInit = do
         con <- connectTo (setHost s) (PortNumber . fromIntegral . setPort $ s)
@@ -155,16 +163,21 @@ uncompressed m = do
     s <- asks settings
     local (\e -> e { settings = s { setCompression = noCompression } }) m
 
+uncached :: Client a -> Client a
+uncached = local (\e -> e { queryCache = Nothing })
+
 compression :: Client Compression
 compression = asks (setCompression . settings)
 
 cache :: QueryString k a b -> QueryId k a b -> Client ()
-cache (QueryString k) (QueryId v) = asks queryCache >>= Cache.add k v
+cache (QueryString k) (QueryId v) = do
+    c <- asks queryCache
+    maybe (return ()) (Cache.add k v) c
 
 cacheLookup :: QueryString k a b -> Client (Maybe (QueryId k a b))
 cacheLookup (QueryString k) = do
     c <- asks queryCache
-    v <- Cache.lookup k c
+    v <- maybe (return Nothing) (Cache.lookup k) c
     return (QueryId <$> v)
 
 ------------------------------------------------------------------------------
