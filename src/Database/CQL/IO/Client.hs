@@ -4,6 +4,7 @@
 
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE OverloadedStrings          #-}
 
 module Database.CQL.IO.Client
     ( Settings (..)
@@ -31,6 +32,8 @@ import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy hiding (ByteString, pack, unpack, elem)
+import Data.Foldable (for_)
+import Data.Monoid ((<>))
 import Data.Pool hiding (Pool)
 import Data.Text.Lazy (Text)
 import Data.Time
@@ -40,6 +43,7 @@ import Database.CQL.IO.Cache (Cache)
 import Network
 import System.IO
 
+import qualified Data.Text.Lazy        as LT
 import qualified Data.Pool             as P
 import qualified Database.CQL.IO.Cache as Cache
 
@@ -50,6 +54,7 @@ data Settings = Settings
     , setCompression :: !Compression
     , setHost        :: !String
     , setPort        :: !Word16
+    , setKeyspace    :: !(Maybe Keyspace)
     , setIdleTimeout :: !NominalDiffTime
     , setPoolSize    :: !Word32
     , cacheSize      :: !Int
@@ -82,7 +87,7 @@ instance Async Client Client where
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 60 4 1024 handler
+    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 4 1024 handler
 
 mkPool :: (MonadIO m) => Settings -> m Pool
 mkPool s = liftIO $ do
@@ -110,14 +115,32 @@ mkPool s = liftIO $ do
 
     connInit = do
         con <- connectTo (setHost s) (PortNumber . fromIntegral . setPort $ s)
+        startup con
+        for_ (setKeyspace s) $ useKeyspace con
+        return con
+
+    startup con = do
         let cmp = setCompression s
         let req = RqStartup (Startup (setVersion s) (algorithm cmp))
         intSend cmp con (req :: Request () () ())
         res <- intReceive cmp con :: IO (Response () () ())
         case res of
             RsError _ e -> throw e
-            RsEvent _ e -> setOnEvent s e >> return con
-            _           -> return con
+            RsEvent _ e -> setOnEvent s e
+            _           -> return ()
+
+    useKeyspace con ks = do
+        let cmp = setCompression s
+        let qry = "use " <> quoteIdentifier (LT.fromStrict $ unKeyspace ks)
+        let params = QueryParams One False () Nothing Nothing Nothing
+        let req = RqQuery (Query (QueryString qry) params)
+        intSend cmp con req
+        res <- intReceive cmp con :: IO (Response () () ())
+        case res of
+            RsError _ e -> throw e
+            RsResult _ (SetKeyspaceResult _) -> return ()
+            r -> error $ "Unexpected response on setting keyspace: " ++ show r
+
 
 runClient :: (MonadIO m) => Pool -> Client a -> m a
 runClient p a = liftIO $ withResource (pool p) $ \c ->
@@ -172,7 +195,7 @@ compression = asks (setCompression . settings)
 cache :: QueryString k a b -> QueryId k a b -> Client ()
 cache (QueryString k) (QueryId v) = do
     c <- asks queryCache
-    maybe (return ()) (Cache.add k v) c
+    for_ c $ Cache.add k v
 
 cacheLookup :: QueryString k a b -> Client (Maybe (QueryId k a b))
 cacheLookup (QueryString k) = do
@@ -210,3 +233,6 @@ intReceive a c = do
 
 connection :: Client Handle
 connection = asks conn
+
+quoteIdentifier :: LT.Text -> LT.Text
+quoteIdentifier s = "\"" <> LT.replace "\"" "\"\"" s <> "\""
