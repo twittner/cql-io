@@ -40,6 +40,7 @@ import Data.Time
 import Data.Word
 import Database.CQL.Protocol
 import Database.CQL.IO.Cache (Cache)
+import Database.CQL.IO.Types
 import Network
 import System.IO
 
@@ -50,27 +51,27 @@ import qualified Database.CQL.IO.Cache as Cache
 type EventHandler = Event -> IO ()
 
 data Settings = Settings
-    { setVersion     :: !CqlVersion
-    , setCompression :: !Compression
-    , setHost        :: !String
-    , setPort        :: !Word16
-    , setKeyspace    :: !(Maybe Keyspace)
-    , setIdleTimeout :: !NominalDiffTime
-    , setPoolSize    :: !Word32
-    , cacheSize      :: !Int
+    { setVersion     :: CqlVersion
+    , setCompression :: Compression
+    , setHost        :: String
+    , setPort        :: Word16
+    , setKeyspace    :: Maybe Keyspace
+    , setIdleTimeout :: NominalDiffTime
+    , setPoolSize    :: Word32
+    , cacheSize      :: Int
     , setOnEvent     :: EventHandler
     }
 
 data Pool = Pool
-    { sets   :: !Settings
-    , qCache :: !(Maybe (Cache Text ByteString))
-    , pool   :: !(P.Pool Handle)
+    { sets   :: Settings
+    , qCache :: Maybe (Cache Text ByteString)
+    , pool   :: P.Pool Handle
     }
 
 data Env = Env
-    { conn       :: !Handle
-    , settings   :: !Settings
-    , queryCache :: !(Maybe (Cache Text ByteString))
+    { conn       :: Handle
+    , settings   :: Settings
+    , queryCache :: Maybe (Cache Text ByteString)
     }
 
 newtype Client a = Client
@@ -125,21 +126,21 @@ mkPool s = liftIO $ do
         intSend cmp con (req :: Request () () ())
         res <- intReceive cmp con :: IO (Response () () ())
         case res of
-            RsError _ e -> throw e
             RsEvent _ e -> setOnEvent s e
+            RsError _ e -> throw e
             _           -> return ()
 
     useKeyspace con ks = do
-        let cmp = setCompression s
-        let qry = "use " <> quoteIdentifier (LT.fromStrict $ unKeyspace ks)
+        let cmp    = setCompression s
         let params = QueryParams One False () Nothing Nothing Nothing
-        let req = RqQuery (Query (QueryString qry) params)
-        intSend cmp con req
+        let kspace = quoted (LT.fromStrict $ unKeyspace ks)
+        intSend cmp con $
+            RqQuery (Query (QueryString $ "use " <> kspace) params)
         res <- intReceive cmp con :: IO (Response () () ())
         case res of
-            RsError _ e -> throw e
             RsResult _ (SetKeyspaceResult _) -> return ()
-            r -> error $ "Unexpected response on setting keyspace: " ++ show r
+            RsError  _ e                     -> throw e
+            _                                -> throw (UnexpectedResponse' res)
 
 
 runClient :: (MonadIO m) => Pool -> Client a -> m a
@@ -234,5 +235,7 @@ intReceive a c = do
 connection :: Client Handle
 connection = asks conn
 
-quoteIdentifier :: LT.Text -> LT.Text
-quoteIdentifier s = "\"" <> LT.replace "\"" "\"\"" s <> "\""
+
+quoted :: LT.Text -> LT.Text
+quoted s = "\"" <> LT.replace "\"" "\"\"" s <> "\""
+
