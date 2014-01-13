@@ -38,15 +38,10 @@ module Database.CQL.IO
     , supportedOptions
     ) where
 
-import Control.Exception (throw, Exception)
-import Data.Typeable
+import Control.Exception (throw)
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
-
-data UnexpectedResponse = UnexpectedResponse
-    deriving (Eq, Show, Typeable)
-
-instance Exception UnexpectedResponse
+import Database.CQL.IO.Types
 
 ------------------------------------------------------------------------------
 -- query

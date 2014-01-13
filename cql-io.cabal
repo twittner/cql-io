@@ -31,6 +31,7 @@ library
     other-modules:
         Database.CQL.IO.Client
         Database.CQL.IO.Cache
+        Database.CQL.IO.Types
 
     build-depends:
           async-class  == 0.*
