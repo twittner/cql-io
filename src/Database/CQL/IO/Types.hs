@@ -10,7 +10,15 @@ module Database.CQL.IO.Types where
 
 import Control.Exception (Exception)
 import Data.Typeable
-import Database.CQL.Protocol (Response)
+import Database.CQL.Protocol (Response, CompressionAlgorithm)
+
+data InvalidSettings
+    = UnsupportedCompression [CompressionAlgorithm]
+    | InvalidCacheSize
+    deriving (Show, Typeable)
+
+data InternalError = InternalError String
+    deriving (Show, Typeable)
 
 data UnexpectedResponse where
     UnexpectedResponse  :: UnexpectedResponse
@@ -19,5 +27,6 @@ data UnexpectedResponse where
 deriving instance Show     UnexpectedResponse
 deriving instance Typeable UnexpectedResponse
 
+instance Exception InvalidSettings
+instance Exception InternalError
 instance Exception UnexpectedResponse
-

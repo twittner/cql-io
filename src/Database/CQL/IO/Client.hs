@@ -3,7 +3,6 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE OverloadedStrings          #-}
 
 module Database.CQL.IO.Client
@@ -26,7 +25,6 @@ module Database.CQL.IO.Client
     ) where
 
 import Control.Applicative
-import Control.Concurrent.Async.Class
 import Control.Exception
 import Control.Monad.IO.Class
 import Control.Monad.Reader
@@ -83,9 +81,6 @@ newtype Client a = Client
                , MonadReader Env
                )
 
-instance Async Client Client where
-    async = Client . async . client
-
 defSettings :: Settings
 defSettings = let handler = const $ return () in
     Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 4 1024 handler
@@ -105,9 +100,9 @@ mkPool s = liftIO $ do
         Supported ca _ <- supportedOptions (setHost s) (setPort s)
         let c = algorithm (setCompression s)
         unless (c == None || c `elem` ca) $
-            fail $ "Compression method not supported, only: " ++ show ca
+            throw $ UnsupportedCompression ca
         unless (cacheSize s >= 0) $
-            fail $ "Cache size must be >= 0"
+            throw InvalidCacheSize
 
     cacheInit =
         if cacheSize s > 0
@@ -155,7 +150,7 @@ supportedOptions h p = liftIO $
         case b of
             RsSupported _ s -> return s
             RsError     _ e -> throw e
-            _               -> fail "unexpected response"
+            _               -> throw (UnexpectedResponse' b)
 
 send :: (Tuple a) => Request k a b -> Client ()
 send r = do
@@ -214,27 +209,28 @@ intSend f h r = do
             OcStartup -> return noCompression
             OcOptions -> return noCompression
             _         -> return f
-    a <- either (fail "failed to create request") return (pack c False s r)
+    a <- either (throw $ InternalError "request creation")
+                return
+                (pack c False s r)
     hPut h a
 
 intReceive :: (Tuple a, Tuple b) => Compression -> Handle -> IO (Response k a b)
 intReceive a c = do
     b <- hGet c 8
     h <- case header b of
-            Left  e -> fail $ "failed to read response header: " ++ e
+            Left  e -> throw $ InternalError ("response header reading: " ++ e)
             Right h -> return h
     case headerType h of
-        RqHeader -> fail "unexpected request header"
+        RqHeader -> throw $ InternalError "unexpected request header"
         RsHeader -> do
             let len = lengthRepr (bodyLength h)
             x <- hGet c (fromIntegral len)
             case unpack a h x of
-                Left  e -> fail $ "failed to read response body: " ++ e
+                Left  e -> throw $ InternalError ("response body reading: " ++ e)
                 Right r -> return r
 
 connection :: Client Handle
 connection = asks conn
-
 
 quoted :: LT.Text -> LT.Text
 quoted s = "\"" <> LT.replace "\"" "\"\"" s <> "\""
