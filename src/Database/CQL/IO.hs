@@ -37,6 +37,7 @@ module Database.CQL.IO
     ) where
 
 import Control.Exception (throw)
+import Control.Monad (void)
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
 import Database.CQL.IO.Types
@@ -59,7 +60,7 @@ query q p = do
         _                           -> throw UnexpectedResponse
 
 write :: (Tuple a) => QueryString W a () -> QueryParams a -> Client ()
-write q p = query' q p >> return ()
+write q p = void $ query' q p
 
 schema :: (Tuple a) => QueryString S a () -> QueryParams a -> Client SchemaChange
 schema x y = do
@@ -108,7 +109,7 @@ execute q p = do
         _                           -> throw UnexpectedResponse
 
 executeWrite :: (Tuple a) => QueryId W a () -> QueryParams a -> Client ()
-executeWrite q p = execute' q p >> return ()
+executeWrite q p = void $ execute' q p
 
 executeSchema :: (Tuple a) => QueryId S a () -> QueryParams a -> Client SchemaChange
 executeSchema q p = do
