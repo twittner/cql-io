@@ -11,6 +11,7 @@ module Database.CQL.IO
     , mkPool
     , defSettings
     , runClient
+    , runAsync
 
     , query
     , write

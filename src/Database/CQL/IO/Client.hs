@@ -12,6 +12,7 @@ module Database.CQL.IO.Client
     , defSettings
     , mkPool
     , runClient
+    , runAsync
     , send
     , receive
     , request
@@ -25,7 +26,9 @@ module Database.CQL.IO.Client
     ) where
 
 import Control.Applicative
+import Control.Concurrent.Async (async, Async)
 import Control.Exception
+import Control.Monad.CatchIO (MonadCatchIO)
 import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Data.ByteString (ByteString)
@@ -78,6 +81,7 @@ newtype Client a = Client
                , Applicative
                , Monad
                , MonadIO
+               , MonadCatchIO
                , MonadReader Env
                )
 
@@ -138,9 +142,12 @@ mkPool s = liftIO $ do
             _                                -> throw (UnexpectedResponse' res)
 
 
-runClient :: (MonadIO m) => Pool -> Client a -> m a
+runClient :: MonadIO m => Pool -> Client a -> m a
 runClient p a = liftIO $ withResource (pool p) $ \c ->
     runReaderT (client a) $ Env c (sets p) (qCache p)
+
+runAsync :: Client a -> Client (Async a)
+runAsync c = ask >>= liftIO . async . runReaderT (client c)
 
 supportedOptions :: (MonadIO m) => String -> Word16 -> m Supported
 supportedOptions h p = liftIO $
