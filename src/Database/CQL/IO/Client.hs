@@ -2,8 +2,7 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Database.CQL.IO.Client
     ( Settings (..)
@@ -27,63 +26,23 @@ module Database.CQL.IO.Client
 
 import Control.Applicative
 import Control.Concurrent.Async (async, Async)
-import Control.Exception
-import Control.Monad.CatchIO (MonadCatchIO)
+import Control.Exception (throw)
+import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Reader
-import Data.ByteString (ByteString)
 import Data.ByteString.Lazy hiding (ByteString, pack, unpack, elem)
 import Data.Foldable (for_)
 import Data.Monoid ((<>))
 import Data.Pool hiding (Pool)
-import Data.Text.Lazy (Text)
-import Data.Time
 import Data.Word
 import Database.CQL.Protocol
-import Database.CQL.IO.Cache (Cache)
 import Database.CQL.IO.Types
+import Database.CQL.IO.Internal
 import Network
 import System.IO
 
 import qualified Data.Text.Lazy        as LT
-import qualified Data.Pool             as P
 import qualified Database.CQL.IO.Cache as Cache
-
-type EventHandler = Event -> IO ()
-
-data Settings = Settings
-    { setVersion     :: CqlVersion
-    , setCompression :: Compression
-    , setHost        :: String
-    , setPort        :: Word16
-    , setKeyspace    :: Maybe Keyspace
-    , setIdleTimeout :: NominalDiffTime
-    , setPoolSize    :: Word32
-    , cacheSize      :: Int
-    , setOnEvent     :: EventHandler
-    }
-
-data Pool = Pool
-    { sets   :: Settings
-    , qCache :: Maybe (Cache Text ByteString)
-    , pool   :: P.Pool Handle
-    }
-
-data Env = Env
-    { conn       :: Handle
-    , settings   :: Settings
-    , queryCache :: Maybe (Cache Text ByteString)
-    }
-
-newtype Client a = Client
-    { client :: ReaderT Env IO a
-    } deriving ( Functor
-               , Applicative
-               , Monad
-               , MonadIO
-               , MonadCatchIO
-               , MonadReader Env
-               )
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
@@ -140,7 +99,6 @@ mkPool s = liftIO $ do
             RsResult _ (SetKeyspaceResult _) -> return ()
             RsError  _ e                     -> throw e
             _                                -> throw (UnexpectedResponse' res)
-
 
 runClient :: MonadIO m => Pool -> Client a -> m a
 runClient p a = liftIO $ withResource (pool p) $ \c ->
