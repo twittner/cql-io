@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.2.0
+version:              0.4
 synopsis:             CQL client
 stability:            experimental
 license:              OtherLicense
