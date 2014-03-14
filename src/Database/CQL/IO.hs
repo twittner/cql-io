@@ -6,6 +6,7 @@ module Database.CQL.IO
     ( Settings           (..)
     , Pool
     , Client
+    , UnexpectedResponse (..)
 
     , mkPool
     , defSettings
