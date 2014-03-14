@@ -29,8 +29,6 @@ module Database.CQL.IO
     , uncompressed
     , uncached
 
-    , send
-    , receive
     , request
     , command
     , supportedOptions

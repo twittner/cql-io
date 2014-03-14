@@ -12,8 +12,6 @@ module Database.CQL.IO.Client
     , defSettings
     , mkPool
     , runClient
-    , send
-    , receive
     , request
     , command
     , supportedOptions
@@ -61,24 +59,18 @@ data Settings = Settings
     }
 
 data Pool = Pool
-    { sets   :: Settings
-    , qCache :: Maybe (Cache Text ByteString)
-    , pool   :: P.Pool Handle
-    }
-
-data Env = Env
-    { conn       :: Handle
-    , settings   :: Settings
+    { settings   :: Settings
     , queryCache :: Maybe (Cache Text ByteString)
+    , connPool   :: P.Pool Handle
     }
 
 newtype Client a = Client
-    { client :: ReaderT Env IO a
+    { client :: ReaderT Pool IO a
     } deriving ( Functor
                , Applicative
                , Monad
                , MonadIO
-               , MonadReader Env
+               , MonadReader Pool
                )
 
 defSettings :: Settings
@@ -118,7 +110,7 @@ mkPool s = liftIO $ do
     startup con = do
         let cmp = setCompression s
         let req = RqStartup (Startup (setVersion s) (algorithm cmp))
-        intSend cmp con (req :: Request () () ())
+        send cmp con (req :: Request () () ())
         res <- intReceive cmp con :: IO (Response () () ())
         case res of
             RsEvent _ e -> setOnEvent s e
@@ -129,7 +121,7 @@ mkPool s = liftIO $ do
         let cmp    = setCompression s
         let params = QueryParams One False () Nothing Nothing Nothing
         let kspace = quoted (LT.fromStrict $ unKeyspace ks)
-        intSend cmp con $
+        send cmp con $
             RqQuery (Query (QueryString $ "use " <> kspace) params)
         res <- intReceive cmp con :: IO (Response () () ())
         case res of
@@ -139,40 +131,24 @@ mkPool s = liftIO $ do
 
 
 runClient :: (MonadIO m) => Pool -> Client a -> m a
-runClient p a = liftIO $ withResource (pool p) $ \c ->
-    runReaderT (client a) $ Env c (sets p) (qCache p)
+runClient p a = liftIO $ runReaderT (client a) p
 
 supportedOptions :: (MonadIO m) => String -> Word16 -> m Supported
 supportedOptions h p = liftIO $
     bracket (connectTo h (PortNumber (fromIntegral p))) hClose $ \c -> do
-        intSend noCompression c (RqOptions Options :: Request () () ())
+        send noCompression c (RqOptions Options :: Request () () ())
         b <- intReceive noCompression c :: IO (Response () () ())
         case b of
             RsSupported _ s -> return s
             RsError     _ e -> throw e
             _               -> throw (UnexpectedResponse' b)
 
-send :: (Tuple a) => Request k a b -> Client ()
-send r = do
-    c <- compression
-    h <- connection
-    liftIO $ intSend c h r
-
-receive :: (Tuple a, Tuple b) => Client (Response k a b)
-receive = do
-    c <- compression
-    h <- connection
-    r <- liftIO $ intReceive c h
-    case r of
-        RsError _ e -> throw e
-        RsEvent _ e -> do
-            f <- asks (setOnEvent . settings)
-            liftIO $ f e
-            receive
-        _           -> return r
-
 request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
-request a = send a >> receive
+request a = do
+    p <- asks connPool
+    s <- asks settings
+    liftIO $ withResource p $ \h ->
+        send (setCompression s) h a >> receive s h
 
 command :: Request k () () -> Client ()
 command r = void (request r)
@@ -202,8 +178,8 @@ cacheLookup (QueryString k) = do
 ------------------------------------------------------------------------------
 -- Internal
 
-intSend :: (Tuple a) => Compression -> Handle -> Request k a b -> IO ()
-intSend f h r = do
+send :: (Tuple a) => Compression -> Handle -> Request k a b -> IO ()
+send f h r = do
     let s = StreamId 1
     c <- case getOpCode r of
             OcStartup -> return noCompression
@@ -213,6 +189,16 @@ intSend f h r = do
                 return
                 (pack c False s r)
     hPut h a
+
+receive :: (Tuple a, Tuple b) => Settings -> Handle -> IO (Response k a b)
+receive s h = do
+    r <- intReceive (setCompression s) h
+    case r of
+        RsError _ e -> throw e
+        RsEvent _ e -> do
+            forkIO $ setOnEvent s e
+            receive s h
+        _           -> return r
 
 intReceive :: (Tuple a, Tuple b) => Compression -> Handle -> IO (Response k a b)
 intReceive a c = do
@@ -228,9 +214,6 @@ intReceive a c = do
             case unpack a h x of
                 Left  e -> throw $ InternalError ("response body reading: " ++ e)
                 Right r -> return r
-
-connection :: Client Handle
-connection = asks conn
 
 quoted :: LT.Text -> LT.Text
 quoted s = "\"" <> LT.replace "\"" "\"\"" s <> "\""
