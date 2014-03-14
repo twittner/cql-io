@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.2.1
+version:              0.2.0
 synopsis:             CQL client
 stability:            experimental
 license:              OtherLicense
@@ -34,17 +34,15 @@ library
         Database.CQL.IO.Types
 
     build-depends:
-          async                     == 2.0.*
-        , base                      == 4.*
-        , bytestring                >= 0.10
-        , containers                >= 0.5
-        , cql                       == 2.*
-        , mtl                       >= 2.1
-        , MonadCatchIO-transformers == 0.3.*
-        , mwc-random                == 0.13.*
-        , network                   >= 2.4
-        , ex-pool                   >= 0.1
-        , text                      >= 0.11
-        , time                      >= 1.4
-        , tagged                    >= 0.7
-        , transformers              >= 0.3
+          base         == 4.*
+        , bytestring   >= 0.10
+        , containers   >= 0.5
+        , cql          == 2.*
+        , mtl          >= 2.1
+        , mwc-random   == 0.13.*
+        , network      >= 2.4
+        , ex-pool      >= 0.1
+        , text         >= 0.11
+        , time         >= 1.4
+        , tagged       >= 0.7
+        , transformers >= 0.3
