@@ -23,6 +23,7 @@ module Database.CQL.IO.Client
     ) where
 
 import Control.Applicative
+import Control.Concurrent (forkIO)
 import Control.Exception
 import Control.Monad.IO.Class
 import Control.Monad.Reader
@@ -196,7 +197,7 @@ receive s h = do
     case r of
         RsError _ e -> throw e
         RsEvent _ e -> do
-            forkIO $ setOnEvent s e
+            void $ forkIO $ setOnEvent s e
             receive s h
         _           -> return r
 
