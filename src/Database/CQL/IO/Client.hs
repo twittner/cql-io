@@ -24,8 +24,9 @@ module Database.CQL.IO.Client
 
 import Control.Applicative
 import Control.Concurrent (forkIO)
-import Control.Exception
+import Control.Exception (throw)
 import Control.Monad.IO.Class
+import Control.Monad.Catch
 import Control.Monad.Reader
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy hiding (ByteString, pack, unpack, elem)
@@ -71,6 +72,8 @@ newtype Client a = Client
                , Applicative
                , Monad
                , MonadIO
+               , MonadThrow
+               , MonadCatch
                , MonadReader Pool
                )
 
