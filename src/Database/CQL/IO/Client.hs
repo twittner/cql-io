@@ -56,6 +56,7 @@ data Settings = Settings
     , setKeyspace    :: Maybe Keyspace
     , setIdleTimeout :: NominalDiffTime
     , setPoolSize    :: Word32
+    , setPoolStripes :: Word32
     , cacheSize      :: Int
     , setOnEvent     :: EventHandler
     }
@@ -79,7 +80,7 @@ newtype Client a = Client
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 4 1024 handler
+    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 4 1 1024 handler
 
 mkPool :: (MonadIO m) => Settings -> m Pool
 mkPool s = liftIO $ do
@@ -88,7 +89,7 @@ mkPool s = liftIO $ do
            <*> createPool
                 connInit
                 hClose
-                (if setPoolSize s < 4 then 1 else 4)
+                (setPoolStripes s)
                 (setIdleTimeout s)
                 (setPoolSize s)
   where
