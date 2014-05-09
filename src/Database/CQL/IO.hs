@@ -6,7 +6,6 @@ module Database.CQL.IO
     ( Settings           (..)
     , Pool
     , Client
-    , UnexpectedResponse (..)
 
     , mkPool
     , defSettings
@@ -26,12 +25,18 @@ module Database.CQL.IO
 
     , register
     , batch
+
+    -- * Transfer settings
     , uncompressed
     , uncached
 
     , request
     , command
-    , supportedOptions
+
+    -- * Exceptions
+    , InvalidSettings    (..)
+    , InternalError      (..)
+    , UnexpectedResponse (..)
     ) where
 
 import Control.Exception (throw)
