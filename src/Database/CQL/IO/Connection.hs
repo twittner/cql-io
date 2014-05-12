@@ -6,27 +6,25 @@ module Database.CQL.IO.Connection
     ( Connection
     , resolve
     , connect
-    , close
+    , destroy
     , send
     , recv
     ) where
 
 import Control.Applicative
 import Control.Exception
-import Control.Monad
 import Data.ByteString.Lazy (ByteString)
-import Data.Maybe (isJust)
 import Data.Word
-import Database.CQL.IO.Types
 import Network
-import Network.Socket hiding (close, connect, recv, send)
-import System.Timeout
+import Network.Socket.Eager (Descriptor, Milliseconds (..))
+import Network.Socket hiding (connect, send, sendTo, recv, recvFrom)
 
-import qualified Data.ByteString.Lazy           as L
-import qualified Network.Socket                 as S
-import qualified Network.Socket.ByteString.Lazy as N
+import qualified Network.Socket.Eager as Eager
 
-newtype Connection = Connection { sock :: Socket }
+data Connection = Connection
+    { sock :: !Socket
+    , desc :: !Descriptor
+    }
 
 resolve :: String -> Word16 -> IO AddrInfo
 resolve host port =
@@ -36,26 +34,19 @@ resolve host port =
 
 connect :: Int -> AddrInfo -> IO Connection
 connect t a =
-    bracketOnError mkSock S.close $ \s -> do
-        ok <- timeout (t * 1000) (S.connect s (addrAddress a))
-        unless (isJust ok) $
-            throwIO ConnectTimeout
-        return (Connection s)
+    bracketOnError mkSock close $ \s -> do
+        let d = Eager.descriptor s
+        Eager.connect' (Milliseconds t) a d
+        return (Connection s d)
   where
     mkSock = socket (addrFamily a) (addrSocketType a) (addrProtocol a)
 
-close :: Connection -> IO ()
-close = S.close . sock
+destroy :: Connection -> IO ()
+destroy = close . sock
 
 send :: Int -> ByteString -> Connection -> IO ()
-send t s c = do
-    ok <- timeout (t * 1000) (N.sendAll (sock c) s)
-    unless (isJust ok) $
-        throwIO SendTimeout
+send t s c = Eager.send' (Milliseconds t) s (desc c) (sock c)
 
 recv :: Int -> Int -> Connection -> IO ByteString
-recv _ 0 _ = return L.empty
-recv t s c = do
-    bs <- timeout (t * 1000) (N.recv (sock c) (fromIntegral s))
-    maybe (throwIO RecvTimeout) return bs
+recv t s c = Eager.recv' (Milliseconds t) s (desc c) (sock c)
 

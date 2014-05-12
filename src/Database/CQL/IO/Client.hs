@@ -130,7 +130,7 @@ mkPool g s = liftIO $ do
 
     connClose c = do
         Logger.debug g $ "Database.CQL.IO.Client.connClose" .= setHost s
-        C.close c
+        C.destroy c
 
     startup con = do
         let cmp = setCompression s
@@ -158,7 +158,7 @@ mkPool g s = liftIO $ do
             RsError  _ e                     -> throw e
             _                                -> throw (UnexpectedResponse' res)
 
-    supportedOptions a = bracket (C.connect (setConnectTimeout s) a) C.close $ \c -> do
+    supportedOptions a = bracket (C.connect (setConnectTimeout s) a) C.destroy $ \c -> do
         let sto = setSendTimeout s
             rto = setRecvTimeout s
         send sto noCompression c (RqOptions Options :: Request () () ())

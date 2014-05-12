@@ -23,12 +23,6 @@ data InternalError = InternalError String
 data ConnectionsBusy = ConnectionsBusy
     deriving (Show, Typeable)
 
-data Timeout
-    = ConnectTimeout
-    | SendTimeout
-    | RecvTimeout
-    deriving (Show, Typeable)
-
 data UnexpectedResponse where
     UnexpectedResponse  :: UnexpectedResponse
     UnexpectedResponse' :: (Show b) => Response k a b -> UnexpectedResponse
@@ -40,4 +34,3 @@ instance Exception InvalidSettings
 instance Exception InternalError
 instance Exception UnexpectedResponse
 instance Exception ConnectionsBusy
-instance Exception Timeout
