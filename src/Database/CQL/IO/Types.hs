@@ -20,6 +20,12 @@ data InvalidSettings
 data InternalError = InternalError String
     deriving (Show, Typeable)
 
+data Timeout
+    = ConnectTimeout
+    | SendTimeout
+    | RecvTimeout
+    deriving (Show, Typeable)
+
 data UnexpectedResponse where
     UnexpectedResponse  :: UnexpectedResponse
     UnexpectedResponse' :: (Show b) => Response k a b -> UnexpectedResponse
@@ -30,3 +36,4 @@ deriving instance Typeable UnexpectedResponse
 instance Exception InvalidSettings
 instance Exception InternalError
 instance Exception UnexpectedResponse
+instance Exception Timeout
