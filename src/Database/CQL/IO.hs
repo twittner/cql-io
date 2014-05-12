@@ -3,12 +3,28 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 module Database.CQL.IO
-    ( Settings           (..)
-    , Pool
-    , Client
-
-    , mkPool
+    ( Settings
     , defSettings
+    , setVersion
+    , setCompression
+    , setHost
+    , setPort
+    , setKeyspace
+    , setIdleTimeout
+    , setMaxConnections
+    , setMaxWaitQueue
+    , setPoolStripes
+    , setConnectTimeout
+    , setRecvTimeout
+    , setSendTimeout
+    , setCacheSize
+    , setOnEventHandler
+
+    , Pool
+    , mkPool
+    , shutdown
+
+    , Client
     , runClient
 
     , query
@@ -37,12 +53,14 @@ module Database.CQL.IO
     , InvalidSettings    (..)
     , InternalError      (..)
     , UnexpectedResponse (..)
+    , ConnectionsBusy    (..)
     ) where
 
 import Control.Exception (throw)
 import Control.Monad (void)
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
+import Database.CQL.IO.Settings
 import Database.CQL.IO.Types
 
 ------------------------------------------------------------------------------
