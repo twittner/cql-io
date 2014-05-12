@@ -6,10 +6,8 @@
 {-# LANGUAGE OverloadedStrings          #-}
 
 module Database.CQL.IO.Client
-    ( Settings (..)
-    , Pool
+    ( Pool
     , Client
-    , defSettings
     , mkPool
     , shutdown
     , runClient
@@ -34,11 +32,11 @@ import Data.IORef
 import Data.Monoid ((<>))
 import Data.Pool hiding (Pool)
 import Data.Text.Lazy (Text)
-import Data.Time
 import Data.Word
 import Database.CQL.Protocol
 import Database.CQL.IO.Cache (Cache)
 import Database.CQL.IO.Connection (Connection)
+import Database.CQL.IO.Settings
 import Database.CQL.IO.Types
 import System.Logger.Class hiding (Settings, defSettings)
 
@@ -47,25 +45,6 @@ import qualified Data.Pool                  as P
 import qualified Database.CQL.IO.Cache      as Cache
 import qualified Database.CQL.IO.Connection as C
 import qualified System.Logger              as Logger
-
-type EventHandler = Event -> IO ()
-
-data Settings = Settings
-    { setVersion        :: CqlVersion
-    , setCompression    :: Compression
-    , setHost           :: String
-    , setPort           :: Word16
-    , setKeyspace       :: Maybe Keyspace
-    , setIdleTimeout    :: NominalDiffTime
-    , setMaxConnections :: Int
-    , setMaxWaitQueue   :: Maybe Word
-    , setPoolStripes    :: Int
-    , setConnectTimeout :: Int
-    , setRecvTimeout    :: Int
-    , setSendTimeout    :: Int
-    , cacheSize         :: Int
-    , setOnEvent        :: EventHandler
-    }
 
 data Pool = Pool
     { settings   :: Settings
@@ -90,66 +69,62 @@ newtype Client a = Client
 instance MonadLogger Client where
     log l m = asks logger >>= \g -> Logger.log g l m
 
-defSettings :: Settings
-defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 60 Nothing 4 3000 5000 5000 1024 handler
-
 mkPool :: MonadIO m => Logger -> Settings -> m Pool
 mkPool g s = liftIO $ do
     a <- validateSettings
     Pool s <$> cacheInit
            <*> createPool (connOpen a)
                           connClose
-                          (setPoolStripes s)
-                          (setIdleTimeout s)
-                          (setMaxConnections s)
+                          (sPoolStripes s)
+                          (sIdleTimeout s)
+                          (sMaxConnections s)
            <*> pure g
            <*> newIORef 0
   where
     validateSettings = do
-        addr <- C.resolve (setHost s) (setPort s)
+        addr <- C.resolve (sHost s) (sPort s)
         Supported ca _ <- supportedOptions addr
-        let c = algorithm (setCompression s)
+        let c = algorithm (sCompression s)
         unless (c == None || c `elem` ca) $
             throw $ UnsupportedCompression ca
-        unless (cacheSize s >= 0) $
+        unless (sCacheSize s >= 0) $
             throw InvalidCacheSize
         return addr
 
     cacheInit =
-        if cacheSize s > 0
-            then Just <$> Cache.new (cacheSize s)
+        if sCacheSize s > 0
+            then Just <$> Cache.new (sCacheSize s)
             else return Nothing
 
     connOpen a = do
-        Logger.debug g $ "Database.CQL.IO.Client.connOpen" .= setHost s
-        c <- C.connect (setConnectTimeout s) a
+        Logger.debug g $ "Database.CQL.IO.Client.connOpen" .= sHost s
+        c <- C.connect (sConnectTimeout s) a
         startup c
-        for_ (setKeyspace s) $ useKeyspace c
+        for_ (sKeyspace s) $ useKeyspace c
         return c
 
     connClose c = do
-        Logger.debug g $ "Database.CQL.IO.Client.connClose" .= setHost s
+        Logger.debug g $ "Database.CQL.IO.Client.connClose" .= sHost s
         C.close c
 
     startup con = do
-        let cmp = setCompression s
-            req = RqStartup (Startup (setVersion s) (algorithm cmp))
-            sto = setSendTimeout s
-            rto = setRecvTimeout s
+        let cmp = sCompression s
+            req = RqStartup (Startup (sVersion s) (algorithm cmp))
+            sto = sSendTimeout s
+            rto = sRecvTimeout s
         send sto cmp con (req :: Request () () ())
         res <- intReceive rto cmp con :: IO (Response () () ())
         case res of
-            RsEvent _ e -> setOnEvent s e
+            RsEvent _ e -> sOnEvent s e
             RsError _ e -> throw e
             _           -> return ()
 
     useKeyspace con ks = do
-        let cmp    = setCompression s
+        let cmp    = sCompression s
             params = QueryParams One False () Nothing Nothing Nothing
             kspace = quoted (LT.fromStrict $ unKeyspace ks)
-            sto = setSendTimeout s
-            rto = setRecvTimeout s
+            sto = sSendTimeout s
+            rto = sRecvTimeout s
         send sto cmp con $
             RqQuery (Query (QueryString $ "use " <> kspace) params)
         res <- intReceive rto cmp con :: IO (Response () () ())
@@ -158,9 +133,9 @@ mkPool g s = liftIO $ do
             RsError  _ e                     -> throw e
             _                                -> throw (UnexpectedResponse' res)
 
-    supportedOptions a = bracket (C.connect (setConnectTimeout s) a) C.close $ \c -> do
-        let sto = setSendTimeout s
-            rto = setRecvTimeout s
+    supportedOptions a = bracket (C.connect (sConnectTimeout s) a) C.close $ \c -> do
+        let sto = sSendTimeout s
+            rto = sRecvTimeout s
         send sto noCompression c (RqOptions Options :: Request () () ())
         b <- intReceive rto noCompression c :: IO (Response () () ())
         case b of
@@ -179,10 +154,10 @@ request a = do
     p <- ask
     let c = connPool p
         s = settings p
-    case setMaxWaitQueue s of
+    case sMaxWaitQueue s of
         Nothing -> liftIO $ withResource c $ \h -> do
-            send (setSendTimeout s) (setCompression s) h a
-            receive (setRecvTimeout s) s h
+            send (sSendTimeout s) (sCompression s) h a
+            receive (sRecvTimeout s) s h
         Just wq -> liftIO $ do
             r <- tryWithResource c (go s p)
             maybe (retry wq c s p) return r
@@ -190,8 +165,8 @@ request a = do
     go s p h = do
         atomicModifyIORef' (failures p) $ \n ->
             (if n > 0 then n - 1 else 0, ())
-        send (setSendTimeout s) (setCompression s) h a
-        receive (setRecvTimeout s) s h
+        send (sSendTimeout s) (sCompression s) h a
+        receive (sRecvTimeout s) s h
 
     retry wq c s p = do
         k <- atomicModifyIORef' (failures p) $ \n -> (n + 1, n)
@@ -205,13 +180,13 @@ command r = void (request r)
 uncompressed :: Client a -> Client a
 uncompressed m = do
     s <- asks settings
-    local (\e -> e { settings = s { setCompression = noCompression } }) m
+    local (\e -> e { settings = s { sCompression = noCompression } }) m
 
 uncached :: Client a -> Client a
 uncached = local (\e -> e { queryCache = Nothing })
 
 compression :: Client Compression
-compression = asks (setCompression . settings)
+compression = asks (sCompression . settings)
 
 cache :: QueryString k a b -> QueryId k a b -> Client ()
 cache (QueryString k) (QueryId v) = do
@@ -241,11 +216,11 @@ send t f h r = do
 
 receive :: (Tuple a, Tuple b) => Int -> Settings -> Connection -> IO (Response k a b)
 receive t s h = do
-    r <- intReceive t (setCompression s) h
+    r <- intReceive t (sCompression s) h
     case r of
         RsError _ e -> throw e
         RsEvent _ e -> do
-            void $ forkIO $ setOnEvent s e
+            void $ forkIO $ sOnEvent s e
             receive t s h
         _           -> return r
 

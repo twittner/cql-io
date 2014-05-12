@@ -33,6 +33,7 @@ library
         Database.CQL.IO.Client
         Database.CQL.IO.Connection
         Database.CQL.IO.Types
+        Database.CQL.IO.Settings
 
     build-depends:
           base          == 4.*
