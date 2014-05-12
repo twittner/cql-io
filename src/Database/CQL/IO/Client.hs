@@ -24,12 +24,13 @@ module Database.CQL.IO.Client
 
 import Control.Applicative
 import Control.Concurrent (forkIO)
-import Control.Exception (throw)
+import Control.Exception (throw, throwIO)
 import Control.Monad.IO.Class
 import Control.Monad.Catch
 import Control.Monad.Reader
 import Data.ByteString (ByteString)
 import Data.Foldable (for_)
+import Data.IORef
 import Data.Monoid ((<>))
 import Data.Pool hiding (Pool)
 import Data.Text.Lazy (Text)
@@ -56,7 +57,8 @@ data Settings = Settings
     , setPort           :: Word16
     , setKeyspace       :: Maybe Keyspace
     , setIdleTimeout    :: NominalDiffTime
-    , setPoolSize       :: Int
+    , setMaxConnections :: Int
+    , setMaxWaitQueue   :: Word
     , setPoolStripes    :: Int
     , setConnectTimeout :: Int
     , setRecvTimeout    :: Int
@@ -70,6 +72,7 @@ data Pool = Pool
     , queryCache :: Maybe (Cache Text ByteString)
     , connPool   :: P.Pool Connection
     , logger     :: Logger.Logger
+    , failures   :: IORef Word
     }
 
 newtype Client a = Client
@@ -89,7 +92,7 @@ instance MonadLogger Client where
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 4 1 3000 5000 5000 1024 handler
+    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 60 4 1 3000 5000 5000 1024 handler
 
 mkPool :: MonadIO m => Logger -> Settings -> m Pool
 mkPool g s = liftIO $ do
@@ -99,8 +102,9 @@ mkPool g s = liftIO $ do
                           connClose
                           (setPoolStripes s)
                           (setIdleTimeout s)
-                          (setPoolSize s)
+                          (setMaxConnections s)
            <*> pure g
+           <*> newIORef 0
   where
     validateSettings = do
         addr <- C.resolve (setHost s) (setPort s)
@@ -172,11 +176,22 @@ runClient p a = liftIO $ runReaderT (client a) p
 
 request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
 request a = do
-    p <- asks connPool
-    s <- asks settings
-    liftIO $ withResource p $ \h -> do
+    p <- ask
+    let c = connPool p
+        s = settings p
+    liftIO $ tryWithResource c (go s p) >>= maybe (retry c s p) return
+  where
+    go s p h = do
+        atomicModifyIORef' (failures p) $ \n ->
+            (if n > 0 then n - 1 else 0, ())
         send (setSendTimeout s) (setCompression s) h a
         receive (setRecvTimeout s) s h
+
+    retry c s p = do
+        k <- atomicModifyIORef' (failures p) $ \n -> (n + 1, n)
+        unless (k < setMaxWaitQueue s) $
+            throwIO ConnectionsBusy
+        withResource c (go s p)
 
 command :: Request k () () -> Client ()
 command r = void (request r)

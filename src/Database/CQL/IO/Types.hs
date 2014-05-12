@@ -20,6 +20,9 @@ data InvalidSettings
 data InternalError = InternalError String
     deriving (Show, Typeable)
 
+data ConnectionsBusy = ConnectionsBusy
+    deriving (Show, Typeable)
+
 data Timeout
     = ConnectTimeout
     | SendTimeout
@@ -36,4 +39,5 @@ deriving instance Typeable UnexpectedResponse
 instance Exception InvalidSettings
 instance Exception InternalError
 instance Exception UnexpectedResponse
+instance Exception ConnectionsBusy
 instance Exception Timeout
