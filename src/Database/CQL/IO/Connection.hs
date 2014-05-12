@@ -6,7 +6,7 @@ module Database.CQL.IO.Connection
     ( Connection
     , resolve
     , connect
-    , destroy
+    , close
     , send
     , recv
     ) where
@@ -17,8 +17,9 @@ import Data.ByteString.Lazy (ByteString)
 import Data.Word
 import Network
 import Network.Socket.Eager (Descriptor, Milliseconds (..))
-import Network.Socket hiding (connect, send, sendTo, recv, recvFrom)
+import Network.Socket hiding (connect, close, send, recv)
 
+import qualified Network.Socket       as Net
 import qualified Network.Socket.Eager as Eager
 
 data Connection = Connection
@@ -34,15 +35,15 @@ resolve host port =
 
 connect :: Int -> AddrInfo -> IO Connection
 connect t a =
-    bracketOnError mkSock close $ \s -> do
+    bracketOnError mkSock Net.close $ \s -> do
         let d = Eager.descriptor s
-        Eager.connect' (Milliseconds t) a d
+        Eager.connect' (Milliseconds t) (addrAddress a) d
         return (Connection s d)
   where
     mkSock = socket (addrFamily a) (addrSocketType a) (addrProtocol a)
 
-destroy :: Connection -> IO ()
-destroy = close . sock
+close :: Connection -> IO ()
+close = Net.close . sock
 
 send :: Int -> ByteString -> Connection -> IO ()
 send t s c = Eager.send' (Milliseconds t) s (desc c) (sock c)
