@@ -54,6 +54,7 @@ module Database.CQL.IO
     , InternalError      (..)
     , UnexpectedResponse (..)
     , ConnectionsBusy    (..)
+    , Timeout            (..)
     ) where
 
 import Control.Exception (throw)
