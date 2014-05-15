@@ -14,25 +14,24 @@ import Database.CQL.Protocol
 type EventHandler = Event -> IO ()
 
 data Settings = Settings
-    { sVersion        :: CqlVersion
-    , sCompression    :: Compression
-    , sHost           :: String
-    , sPort           :: Word16
-    , sKeyspace       :: Maybe Keyspace
-    , sIdleTimeout    :: NominalDiffTime
-    , sMaxConnections :: Int
-    , sMaxWaitQueue   :: Maybe Word
-    , sPoolStripes    :: Int
-    , sConnectTimeout :: Int
-    , sRecvTimeout    :: Int
-    , sSendTimeout    :: Int
-    , sCacheSize      :: Int
-    , sOnEvent        :: EventHandler
+    { sVersion         :: CqlVersion
+    , sCompression     :: Compression
+    , sHost            :: String
+    , sPort            :: Word16
+    , sKeyspace        :: Maybe Keyspace
+    , sIdleTimeout     :: NominalDiffTime
+    , sMaxConnections  :: Int
+    , sMaxWaitQueue    :: Maybe Word64
+    , sPoolStripes     :: Int
+    , sConnectTimeout  :: Int
+    , sSendRecvTimeout :: Int
+    , sCacheSize       :: Int
+    , sOnEvent         :: EventHandler
     }
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 60 Nothing 4 3000 5000 5000 1024 handler
+    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 60 Nothing 4 3000 10000 1024 handler
 
 setVersion :: CqlVersion -> Settings -> Settings
 setVersion v s = s { sVersion = v }
@@ -55,20 +54,17 @@ setIdleTimeout v s = s { sIdleTimeout = v }
 setMaxConnections :: Int -> Settings -> Settings
 setMaxConnections v s = s { sMaxConnections = v }
 
-setMaxWaitQueue :: Word -> Settings -> Settings
+setMaxWaitQueue :: Word64 -> Settings -> Settings
 setMaxWaitQueue v s = s { sMaxWaitQueue = Just v }
 
 setPoolStripes :: Int -> Settings -> Settings
 setPoolStripes v s = s { sPoolStripes = v }
 
-setConnectTimeout :: Int -> Settings -> Settings
-setConnectTimeout v s = s { sConnectTimeout = v }
+setConnectTimeout :: NominalDiffTime -> Settings -> Settings
+setConnectTimeout v s = s { sConnectTimeout = round (1000 * v) }
 
-setRecvTimeout :: Int -> Settings -> Settings
-setRecvTimeout v s = s { sRecvTimeout = v }
-
-setSendTimeout :: Int -> Settings -> Settings
-setSendTimeout v s = s { sSendTimeout = v }
+setSendRecvTimeout :: NominalDiffTime -> Settings -> Settings
+setSendRecvTimeout v s = s { sSendRecvTimeout = round (1000 * v) }
 
 setCacheSize :: Int -> Settings -> Settings
 setCacheSize v s = s { sCacheSize = v }

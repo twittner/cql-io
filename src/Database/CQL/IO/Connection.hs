@@ -53,17 +53,12 @@ connect t a =
 close :: Connection -> IO ()
 close = S.close . sock
 
-send :: Int -> ByteString -> Connection -> IO ()
-send t s c = do
-    ok <- timeout (t * 1000) (NL.sendAll (sock c) s)
-    unless (isJust ok) $
-        throwIO SendTimeout
+send :: ByteString -> Connection -> IO ()
+send s c = NL.sendAll (sock c) s
 
-recv :: Int -> Int -> Connection -> IO ByteString
-recv _ 0 _ = return L.empty
-recv t n c = do
-    bs <- timeout (t * 1000) (toLazyByteString <$> go 0 mempty)
-    maybe (throwIO ReceiveTimeout) return bs
+recv :: Int -> Connection -> IO ByteString
+recv 0 _ = return L.empty
+recv n c = toLazyByteString <$> go 0 mempty
   where
     go !k !bytes = do
         a <- NB.recv (sock c) (n - k)

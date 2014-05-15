@@ -23,11 +23,7 @@ data InternalError = InternalError String
 data ConnectionsBusy = ConnectionsBusy
     deriving (Show, Typeable)
 
-data Timeout
-    = ConnectTimeout
-    | SendTimeout
-    | ReceiveTimeout
-    deriving (Show, Typeable)
+data Timeout = ConnectTimeout deriving (Show, Typeable)
 
 data UnexpectedResponse where
     UnexpectedResponse  :: UnexpectedResponse

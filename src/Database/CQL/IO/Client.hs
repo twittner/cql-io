@@ -39,19 +39,22 @@ import Database.CQL.IO.Connection (Connection)
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Types
 import System.Logger.Class hiding (Settings, defSettings)
+import System.TimeoutManager (TimeoutManager, Rounds (..))
 
 import qualified Data.Text.Lazy             as LT
 import qualified Data.Pool                  as P
 import qualified Database.CQL.IO.Cache      as Cache
 import qualified Database.CQL.IO.Connection as C
 import qualified System.Logger              as Logger
+import qualified System.TimeoutManager      as TM
 
 data Pool = Pool
     { settings   :: Settings
     , queryCache :: Maybe (Cache Text ByteString)
     , connPool   :: P.Pool Connection
     , logger     :: Logger.Logger
-    , failures   :: IORef Word
+    , failures   :: IORef Word64
+    , timeouts   :: TimeoutManager
     }
 
 newtype Client a = Client
@@ -72,14 +75,16 @@ instance MonadLogger Client where
 mkPool :: MonadIO m => Logger -> Settings -> m Pool
 mkPool g s = liftIO $ do
     a <- validateSettings
+    t <- TM.create roundtime
     Pool s <$> cacheInit
-           <*> createPool (connOpen a)
+           <*> createPool (connOpen t a)
                           connClose
                           (sPoolStripes s)
                           (sIdleTimeout s)
                           (sMaxConnections s)
            <*> pure g
            <*> newIORef 0
+           <*> pure t
   where
     validateSettings = do
         addr <- C.resolve (sHost s) (sPort s)
@@ -96,12 +101,14 @@ mkPool g s = liftIO $ do
             then Just <$> Cache.new (sCacheSize s)
             else return Nothing
 
-    connOpen a = do
+    connOpen t a = do
         Logger.debug g $ "Database.CQL.IO.Client.connOpen" .= sHost s
         c <- C.connect (sConnectTimeout s) a
-        startup c
-        for_ (sKeyspace s) $ useKeyspace c
-        return c
+        x <- TM.add t (rounds $ sSendRecvTimeout s * 2) (C.close c)
+        finally (do startup c
+                    for_ (sKeyspace s) $ useKeyspace c
+                    return c)
+                (TM.cancel x)
 
     connClose c = do
         Logger.debug g $ "Database.CQL.IO.Client.connClose" .= sHost s
@@ -110,10 +117,8 @@ mkPool g s = liftIO $ do
     startup con = do
         let cmp = sCompression s
             req = RqStartup (Startup (sVersion s) (algorithm cmp))
-            sto = sSendTimeout s
-            rto = sRecvTimeout s
-        send sto cmp con (req :: Request () () ())
-        res <- intReceive rto cmp con :: IO (Response () () ())
+        send cmp con (req :: Request () () ())
+        res <- intReceive cmp con :: IO (Response () () ())
         case res of
             RsEvent _ e -> sOnEvent s e
             RsError _ e -> throw e
@@ -123,28 +128,25 @@ mkPool g s = liftIO $ do
         let cmp    = sCompression s
             params = QueryParams One False () Nothing Nothing Nothing
             kspace = quoted (LT.fromStrict $ unKeyspace ks)
-            sto = sSendTimeout s
-            rto = sRecvTimeout s
-        send sto cmp con $
-            RqQuery (Query (QueryString $ "use " <> kspace) params)
-        res <- intReceive rto cmp con :: IO (Response () () ())
+        send cmp con $ RqQuery (Query (QueryString $ "use " <> kspace) params)
+        res <- intReceive cmp con :: IO (Response () () ())
         case res of
             RsResult _ (SetKeyspaceResult _) -> return ()
             RsError  _ e                     -> throw e
             _                                -> throw (UnexpectedResponse' res)
 
     supportedOptions a = bracket (C.connect (sConnectTimeout s) a) C.close $ \c -> do
-        let sto = sSendTimeout s
-            rto = sRecvTimeout s
-        send sto noCompression c (RqOptions Options :: Request () () ())
-        b <- intReceive rto noCompression c :: IO (Response () () ())
+        send noCompression c (RqOptions Options :: Request () () ())
+        b <- intReceive noCompression c :: IO (Response () () ())
         case b of
             RsSupported _ x -> return x
             RsError     _ e -> throw e
             _               -> throw (UnexpectedResponse' b)
 
 shutdown :: MonadIO m => Pool -> m ()
-shutdown = liftIO . P.destroyAllResources . connPool
+shutdown p = liftIO $ do
+    P.destroyAllResources (connPool p)
+    TM.destroy (timeouts p) True
 
 runClient :: MonadIO m => Pool -> Client a -> m a
 runClient p a = liftIO $ runReaderT (client a) p
@@ -154,25 +156,25 @@ request a = do
     p <- ask
     let c = connPool p
         s = settings p
-    case sMaxWaitQueue s of
-        Nothing -> liftIO $ withResource c $ \h -> do
-            send (sSendTimeout s) (sCompression s) h a
-            receive (sRecvTimeout s) s h
-        Just wq -> liftIO $ do
-            r <- tryWithResource c (go s p)
-            maybe (retry wq c s p) return r
+        t = timeouts p
+    liftIO $ case sMaxWaitQueue s of
+        Nothing -> withResource c (transaction s t)
+        Just  q -> tryWithResource c (go s t p) >>= maybe (retry q c s t p) return
   where
-    go s p h = do
-        atomicModifyIORef' (failures p) $ \n ->
-            (if n > 0 then n - 1 else 0, ())
-        send (sSendTimeout s) (sCompression s) h a
-        receive (sRecvTimeout s) s h
+    go s t p h = do
+        atomicModifyIORef' (failures p) $ \n -> (if n > 0 then n - 1 else 0, ())
+        transaction s t h
 
-    retry wq c s p = do
+    retry q c s t p = do
         k <- atomicModifyIORef' (failures p) $ \n -> (n + 1, n)
-        unless (k < wq) $
+        unless (k < q) $
             throwIO ConnectionsBusy
-        withResource c (go s p)
+        withResource c (go s t p)
+
+    transaction s t h = do
+        x <- TM.add t (rounds $ sSendRecvTimeout s) (C.close h)
+        finally (send (sCompression s) h a >> receive s h)
+                (TM.cancel x)
 
 command :: Request k () () -> Client ()
 command r = void (request r)
@@ -202,8 +204,8 @@ cacheLookup (QueryString k) = do
 ------------------------------------------------------------------------------
 -- Internal
 
-send :: Tuple a => Int -> Compression -> Connection -> Request k a b -> IO ()
-send t f h r = do
+send :: Tuple a => Compression -> Connection -> Request k a b -> IO ()
+send f h r = do
     let s = StreamId 1
     c <- case getOpCode r of
             OcStartup -> return noCompression
@@ -212,21 +214,21 @@ send t f h r = do
     a <- either (throw $ InternalError "request creation")
                 return
                 (pack c False s r)
-    C.send t a h
+    C.send a h
 
-receive :: (Tuple a, Tuple b) => Int -> Settings -> Connection -> IO (Response k a b)
-receive t s h = do
-    r <- intReceive t (sCompression s) h
+receive :: (Tuple a, Tuple b) => Settings -> Connection -> IO (Response k a b)
+receive s h = do
+    r <- intReceive (sCompression s) h
     case r of
         RsError _ e -> throw e
         RsEvent _ e -> do
             void $ forkIO $ sOnEvent s e
-            receive t s h
+            receive s h
         _           -> return r
 
-intReceive :: (Tuple a, Tuple b) => Int -> Compression -> Connection -> IO (Response k a b)
-intReceive t a c = do
-    b <- C.recv t 8 c
+intReceive :: (Tuple a, Tuple b) => Compression -> Connection -> IO (Response k a b)
+intReceive a c = do
+    b <- C.recv 8 c
     h <- case header b of
             Left  e -> throw $ InternalError ("response header reading: " ++ e)
             Right h -> return h
@@ -234,11 +236,18 @@ intReceive t a c = do
         RqHeader -> throw $ InternalError "unexpected request header"
         RsHeader -> do
             let len = lengthRepr (bodyLength h)
-            x <- C.recv t (fromIntegral len) c
+            x <- C.recv (fromIntegral len) c
             case unpack a h x of
                 Left  e -> throw $ InternalError ("response body reading: " ++ e)
                 Right r -> return r
 
 quoted :: LT.Text -> LT.Text
 quoted s = "\"" <> LT.replace "\"" "\"\"" s <> "\""
+
+roundtime :: Int
+roundtime = 500000
+
+rounds :: Int -> Rounds
+rounds d = Rounds $ d * 1000 `div` roundtime
+{-# INLINE rounds #-}
 
