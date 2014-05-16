@@ -25,13 +25,12 @@ data Settings = Settings
     , sPoolStripes     :: Int
     , sConnectTimeout  :: Int
     , sSendRecvTimeout :: Int
-    , sCacheSize       :: Int
     , sOnEvent         :: EventHandler
     }
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 60 Nothing 4 3000 10000 1024 handler
+    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 60 Nothing 4 5000 10000 handler
 
 setVersion :: CqlVersion -> Settings -> Settings
 setVersion v s = s { sVersion = v }
@@ -65,9 +64,6 @@ setConnectTimeout v s = s { sConnectTimeout = round (1000 * v) }
 
 setSendRecvTimeout :: NominalDiffTime -> Settings -> Settings
 setSendRecvTimeout v s = s { sSendRecvTimeout = round (1000 * v) }
-
-setCacheSize :: Int -> Settings -> Settings
-setCacheSize v s = s { sCacheSize = v }
 
 setOnEventHandler :: EventHandler -> Settings -> Settings
 setOnEventHandler v s = s { sOnEvent = v }

@@ -16,7 +16,6 @@ module Database.CQL.IO
     , setPoolStripes
     , setConnectTimeout
     , setSendRecvTimeout
-    , setCacheSize
     , setOnEventHandler
 
     , Pool
@@ -43,7 +42,6 @@ module Database.CQL.IO
 
     -- * Transfer settings
     , uncompressed
-    , uncached
 
     , request
     , command
@@ -94,14 +92,12 @@ schema x y = do
 -- prepare
 
 prepare' :: (Tuple a, Tuple b) => QueryString k a b -> Client (QueryId k a b)
-prepare' q = maybe req return =<< cacheLookup q
-  where
-    req = do
-        r <- request (RqPrepare (Prepare q))
-        case r of
-            RsResult _ (PreparedResult i _ _) -> cache q i >> return i
-            RsError _ e                       -> throw e
-            _                                 -> throw UnexpectedResponse
+prepare' q = do
+    r <- request (RqPrepare (Prepare q))
+    case r of
+        RsResult _ (PreparedResult i _ _) -> return i
+        RsError _ e                       -> throw e
+        _                                 -> throw UnexpectedResponse
 
 prepare :: (Tuple a, Tuple b) => QueryString R a b -> Client (QueryId R a b)
 prepare = prepare'
