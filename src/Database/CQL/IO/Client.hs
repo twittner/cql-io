@@ -14,10 +14,7 @@ module Database.CQL.IO.Client
     , request
     , command
     , uncompressed
-    , uncached
     , compression
-    , cache
-    , cacheLookup
     ) where
 
 import Control.Applicative
@@ -26,15 +23,12 @@ import Control.Exception (throw, throwIO)
 import Control.Monad.IO.Class
 import Control.Monad.Catch
 import Control.Monad.Reader
-import Data.ByteString (ByteString)
 import Data.Foldable (for_)
 import Data.IORef
 import Data.Monoid ((<>))
 import Data.Pool hiding (Pool)
-import Data.Text.Lazy (Text)
 import Data.Word
 import Database.CQL.Protocol
-import Database.CQL.IO.Cache (Cache)
 import Database.CQL.IO.Connection (Connection)
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Timeouts (TimeoutManager, Milliseconds (..))
@@ -43,14 +37,12 @@ import System.Logger.Class hiding (Settings, defSettings)
 
 import qualified Data.Text.Lazy             as LT
 import qualified Data.Pool                  as P
-import qualified Database.CQL.IO.Cache      as Cache
 import qualified Database.CQL.IO.Connection as C
 import qualified Database.CQL.IO.Timeouts   as TM
 import qualified System.Logger              as Logger
 
 data Pool = Pool
     { settings   :: Settings
-    , queryCache :: Maybe (Cache Text ByteString)
     , connPool   :: P.Pool Connection
     , logger     :: Logger.Logger
     , failures   :: IORef Word64
@@ -76,8 +68,7 @@ mkPool :: MonadIO m => Logger -> Settings -> m Pool
 mkPool g s = liftIO $ do
     a <- validateSettings
     t <- TM.create (Ms 500)
-    Pool s <$> cacheInit
-           <*> createPool (connOpen t a)
+    Pool s <$> createPool (connOpen t a)
                           connClose
                           (sPoolStripes s)
                           (sIdleTimeout s)
@@ -92,14 +83,7 @@ mkPool g s = liftIO $ do
         let c = algorithm (sCompression s)
         unless (c == None || c `elem` ca) $
             throw $ UnsupportedCompression ca
-        unless (sCacheSize s >= 0) $
-            throw InvalidCacheSize
         return addr
-
-    cacheInit =
-        if sCacheSize s > 0
-            then Just <$> Cache.new (sCacheSize s)
-            else return Nothing
 
     connOpen t a = do
         Logger.debug g $ "Database.CQL.IO.Client.connOpen" .= sHost s
@@ -184,22 +168,8 @@ uncompressed m = do
     s <- asks settings
     local (\e -> e { settings = s { sCompression = noCompression } }) m
 
-uncached :: Client a -> Client a
-uncached = local (\e -> e { queryCache = Nothing })
-
 compression :: Client Compression
 compression = asks (sCompression . settings)
-
-cache :: QueryString k a b -> QueryId k a b -> Client ()
-cache (QueryString k) (QueryId v) = do
-    c <- asks queryCache
-    for_ c $ Cache.add k v
-
-cacheLookup :: QueryString k a b -> Client (Maybe (QueryId k a b))
-cacheLookup (QueryString k) = do
-    c <- asks queryCache
-    v <- maybe (return Nothing) (Cache.lookup k) c
-    return (QueryId <$> v)
 
 ------------------------------------------------------------------------------
 -- Internal
