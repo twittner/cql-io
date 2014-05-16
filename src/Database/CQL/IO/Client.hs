@@ -37,16 +37,16 @@ import Database.CQL.Protocol
 import Database.CQL.IO.Cache (Cache)
 import Database.CQL.IO.Connection (Connection)
 import Database.CQL.IO.Settings
+import Database.CQL.IO.Timeouts (TimeoutManager, Milliseconds (..))
 import Database.CQL.IO.Types
 import System.Logger.Class hiding (Settings, defSettings)
-import System.TimeoutManager (TimeoutManager, Rounds (..))
 
 import qualified Data.Text.Lazy             as LT
 import qualified Data.Pool                  as P
 import qualified Database.CQL.IO.Cache      as Cache
 import qualified Database.CQL.IO.Connection as C
+import qualified Database.CQL.IO.Timeouts   as TM
 import qualified System.Logger              as Logger
-import qualified System.TimeoutManager      as TM
 
 data Pool = Pool
     { settings   :: Settings
@@ -75,7 +75,7 @@ instance MonadLogger Client where
 mkPool :: MonadIO m => Logger -> Settings -> m Pool
 mkPool g s = liftIO $ do
     a <- validateSettings
-    t <- TM.create roundtime
+    t <- TM.create (Ms 500)
     Pool s <$> cacheInit
            <*> createPool (connOpen t a)
                           connClose
@@ -104,7 +104,7 @@ mkPool g s = liftIO $ do
     connOpen t a = do
         Logger.debug g $ "Database.CQL.IO.Client.connOpen" .= sHost s
         c <- C.connect (sConnectTimeout s) a
-        x <- TM.add t (rounds $ sSendRecvTimeout s * 2) (C.close c)
+        x <- TM.add t (Ms $ sSendRecvTimeout s * 2) (C.close c)
         finally (do startup c
                     for_ (sKeyspace s) $ useKeyspace c
                     return c)
@@ -172,7 +172,7 @@ request a = do
         withResource c (go s t p)
 
     transaction s t h = do
-        x <- TM.add t (rounds $ sSendRecvTimeout s) (C.close h)
+        x <- TM.add t (Ms $ sSendRecvTimeout s) (C.close h)
         finally (send (sCompression s) h a >> receive s h)
                 (TM.cancel x)
 
@@ -243,11 +243,4 @@ intReceive a c = do
 
 quoted :: LT.Text -> LT.Text
 quoted s = "\"" <> LT.replace "\"" "\"\"" s <> "\""
-
-roundtime :: Int
-roundtime = 500000
-
-rounds :: Int -> Rounds
-rounds d = Rounds $ d * 1000 `div` roundtime
-{-# INLINE rounds #-}
 

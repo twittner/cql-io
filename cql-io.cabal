@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.6
+version:              0.7
 synopsis:             CQL client
 stability:            experimental
 license:              OtherLicense
@@ -34,6 +34,7 @@ library
         Database.CQL.IO.Connection
         Database.CQL.IO.Types
         Database.CQL.IO.Settings
+        Database.CQL.IO.Timeouts
 
     build-depends:
           base            == 4.*
@@ -46,7 +47,6 @@ library
         , network         >= 2.4     && < 2.6
         , resource-pool   == 0.2.*
         , text            >= 0.11    && < 1.2
-        , timeout-manager == 0.1.*
         , tinylog         == 0.8.*
         , time            == 1.4.*
         , tagged          == 0.7.*
