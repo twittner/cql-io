@@ -12,28 +12,59 @@ import Control.Exception (Exception)
 import Data.Typeable
 import Database.CQL.Protocol (Response, CompressionAlgorithm)
 
+-----------------------------------------------------------------------------
+-- InvalidSettings
+
 data InvalidSettings
     = UnsupportedCompression [CompressionAlgorithm]
     | InvalidCacheSize
-    deriving (Show, Typeable)
+    deriving Typeable
+
+instance Exception InvalidSettings
+
+instance Show InvalidSettings where
+    show (UnsupportedCompression cc) =
+        "Database.CQL.IO.UnsupportedCompression: " ++ show cc
+    show InvalidCacheSize = "Database.CQL.IO.InvalidCacheSize"
+
+-----------------------------------------------------------------------------
+-- InternalError
 
 data InternalError = InternalError String
-    deriving (Show, Typeable)
+    deriving Typeable
 
-data ConnectionsBusy = ConnectionsBusy
-    deriving (Show, Typeable)
+instance Exception InternalError
 
-data Timeout = ConnectTimeout deriving (Show, Typeable)
+instance Show InternalError where
+    show (InternalError e) = "Database.CQL.IO.InternalError: " ++ show e
+
+-----------------------------------------------------------------------------
+-- ConnectionError
+
+data ConnectionError
+    = ConnectionsBusy
+    | ConnectionClosed
+    | ConnectTimeout
+    deriving Typeable
+
+instance Exception ConnectionError
+
+instance Show ConnectionError where
+    show ConnectionsBusy   = "Database.CQL.IO.ConnectionsBusy"
+    show ConnectionClosed  = "Database.CQL.IO.ConnectionClosed"
+    show ConnectTimeout    = "Database.CQL.IO.ConnectTimeout"
+
+-----------------------------------------------------------------------------
+-- UnexpectedResponse
 
 data UnexpectedResponse where
     UnexpectedResponse  :: UnexpectedResponse
     UnexpectedResponse' :: (Show b) => Response k a b -> UnexpectedResponse
 
-deriving instance Show     UnexpectedResponse
 deriving instance Typeable UnexpectedResponse
-
-instance Exception InvalidSettings
-instance Exception InternalError
 instance Exception UnexpectedResponse
-instance Exception ConnectionsBusy
-instance Exception Timeout
+
+instance Show UnexpectedResponse where
+    show UnexpectedResponse      = "Database.CQL.IO.UnexpectedResponse"
+    show (UnexpectedResponse' r) = "Database.CQL.IO.UnexpectedResponse: " ++ show r
+

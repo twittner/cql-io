@@ -21,7 +21,7 @@ import Data.ByteString.Lazy (ByteString)
 import Data.Maybe (isJust)
 import Data.Monoid
 import Data.Word
-import Database.CQL.IO.Types (Timeout (..))
+import Database.CQL.IO.Types (ConnectionError (..))
 import Network
 import Network.Socket hiding (connect, close, send, recv)
 import System.Timeout
@@ -62,9 +62,9 @@ recv n c = toLazyByteString <$> go 0 mempty
   where
     go !k !bytes = do
         a <- NB.recv (sock c) (n - k)
-        if B.null a
-            then return bytes
-            else let b = bytes <> byteString a
-                     m = B.length a + k
-                 in if m < n then go m b else return b
+        when (B.null a) $
+            throwIO ConnectionClosed
+        let b = bytes <> byteString a
+            m = B.length a + k
+        if m < n then go m b else return b
 
