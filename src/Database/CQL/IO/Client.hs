@@ -141,22 +141,25 @@ request a = do
     let c = connPool p
         s = settings p
         t = timeouts p
+        g = logger p
     liftIO $ case sMaxWaitQueue s of
-        Nothing -> withResource c (transaction s t)
-        Just  q -> tryWithResource c (go s t p) >>= maybe (retry q c s t p) return
+        Nothing -> withResource c (transaction g s t)
+        Just  q -> tryWithResource c (go g s t p) >>= maybe (retry g q c s t p) return
   where
-    go s t p h = do
+    go g s t p h = do
         atomicModifyIORef' (failures p) $ \n -> (if n > 0 then n - 1 else 0, ())
-        transaction s t h
+        transaction g s t h
 
-    retry q c s t p = do
+    retry g q c s t p = do
         k <- atomicModifyIORef' (failures p) $ \n -> (n + 1, n)
         unless (k < q) $
             throwIO ConnectionsBusy
-        withResource c (go s t p)
+        withResource c (go g s t p)
 
-    transaction s t h = do
-        x <- TM.add t (Ms $ sSendRecvTimeout s) (C.close h)
+    transaction g s t h = do
+        x <- TM.add t (Ms $ sSendRecvTimeout s) $ do
+            Logger.debug g $ msg (val "Database.CQL.IO.Client.request: timeout")
+            C.close h
         finally (send (sCompression s) h a >> receive s h)
                 (TM.cancel x)
 
