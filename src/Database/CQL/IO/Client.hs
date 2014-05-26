@@ -89,10 +89,13 @@ mkPool g s = liftIO $ do
         Logger.debug g $ "Database.CQL.IO.Client.connOpen" .= sHost s
         c <- C.connect (sConnectTimeout s) a
         x <- TM.add t (Ms $ sSendRecvTimeout s * 2) (C.close c)
-        finally (do startup c
-                    for_ (sKeyspace s) $ useKeyspace c
-                    return c)
-                (TM.cancel x)
+        connInit c `finally` TM.cancel x
+
+    connInit c = flip onException (C.close c) $ do
+        startup c
+        for_ (sKeyspace s) $
+            useKeyspace c
+        return c
 
     connClose c = do
         Logger.debug g $ "Database.CQL.IO.Client.connClose" .= sHost s
