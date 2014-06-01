@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.7.5
+version:              0.8
 synopsis:             CQL client
 stability:            experimental
 license:              OtherLicense
@@ -31,12 +31,16 @@ library
     other-modules:
         Database.CQL.IO.Client
         Database.CQL.IO.Connection
-        Database.CQL.IO.Types
+        Database.CQL.IO.Protocol
         Database.CQL.IO.Settings
+        Database.CQL.IO.Sync
+        Database.CQL.IO.Tickets
         Database.CQL.IO.Timeouts
+        Database.CQL.IO.Types
 
     build-depends:
-          base            >= 4.6     && < 4.8
+          async           == 2.0.*
+        , base            >= 4.6     && < 4.8
         , bytestring      == 0.10.*
         , containers      == 0.5.*
         , cql             >= 2.0.0.3 && < 2.1
@@ -44,8 +48,10 @@ library
         , mtl             >= 2.1     && < 2.3
         , network         >= 2.4     && < 2.6
         , resource-pool   == 0.2.*
+        , stm             == 2.4.*
         , text            >= 0.11    && < 1.2
         , tinylog         >= 0.8     && < 0.11
         , time            == 1.4.*
         , tagged          == 0.7.*
         , transformers    >= 0.3     && < 0.5
+        , vector          == 0.10.*
