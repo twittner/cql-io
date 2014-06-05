@@ -25,25 +25,23 @@ import Control.Monad.Reader
 import Data.Foldable (for_)
 import Data.IORef
 import Data.Monoid ((<>))
-import Data.Pool hiding (Pool)
 import Data.Word
 import Database.CQL.Protocol
 import Database.CQL.IO.Protocol
-import Database.CQL.IO.Connection (Connection)
 import Database.CQL.IO.Settings
-import Database.CQL.IO.Timeouts (TimeoutManager, Milliseconds (..))
+import Database.CQL.IO.Timeouts (TimeoutManager)
 import Database.CQL.IO.Types
 import System.Logger.Class (MonadLogger (..), Logger, (.=), msg, val)
 
 import qualified Data.Text.Lazy             as LT
-import qualified Data.Pool                  as P
+import qualified Database.CQL.IO.Pool       as P
 import qualified Database.CQL.IO.Connection as C
 import qualified Database.CQL.IO.Timeouts   as TM
 import qualified System.Logger              as Logger
 
 data Pool = Pool
     { settings :: Settings
-    , connPool :: P.Pool Connection
+    , connPool :: P.Pool
     , logger   :: Logger.Logger
     , failures :: IORef Word64
     , timeouts :: TimeoutManager
@@ -66,20 +64,20 @@ instance MonadLogger Client where
 
 mkPool :: MonadIO m => Logger -> Settings -> m Pool
 mkPool g s = liftIO $ do
-    a <- validateSettings
-    t <- TM.create (Ms 500)
-    Pool s <$> createPool (connOpen t a)
-                          connClose
-                          (sPoolStripes s)
-                          (sIdleTimeout s)
-                          (sMaxConnections s)
+    t <- TM.create 250
+    a <- validateSettings t
+    Pool s <$> P.create (connOpen t a)
+                        connClose
+                        (P.MaxRes $ sMaxConnections s)
+                        (P.MaxRef $ sMaxStreams s)
+                        (sIdleTimeout s)
            <*> pure g
            <*> newIORef 0
            <*> pure t
   where
-    validateSettings = do
+    validateSettings t = do
         addr <- C.resolve (sHost s) (sPort s)
-        Supported ca _ <- supportedOptions addr
+        Supported ca _ <- supportedOptions t addr
         let c = algorithm (sCompression s)
         unless (c == None || c `elem` ca) $
             throw $ UnsupportedCompression ca
@@ -87,50 +85,49 @@ mkPool g s = liftIO $ do
 
     connOpen t a = do
         Logger.debug g $ "Client.connOpen" .= sHost s
-        c <- C.connect (sConnectTimeout s) a (sCompression s) (sOnEvent s)
-        x <- TM.add t (Ms $ sSendRecvTimeout s * 2) (C.close c)
-        connInit c `finally` TM.cancel x
+        c <- C.connect s a (sCompression s) (sOnEvent s)
+        connInit t c
 
-    connInit c = flip onException (C.close c) $ do
-        startup c
+    connInit t c = flip onException (C.close c) $ do
+        startup t c
         for_ (sKeyspace s) $
-            useKeyspace c
+            useKeyspace t c
         return c
 
     connClose c = do
         Logger.debug g $ "Client.connClose" .= sHost s
         C.close c
 
-    startup con = do
+    startup t con = do
         let cmp = sCompression s
             req = RqStartup (Startup (sVersion s) (algorithm cmp))
-        res <- C.request con (serialise cmp (req :: Request () () ()))
+        res <- C.request s t con (serialise cmp (req :: Request () () ()))
         case parse (sCompression s) res :: Response () () () of
             RsEvent _ e -> sOnEvent s e
             _           -> return ()
 
-    useKeyspace con ks = do
+    useKeyspace t con ks = do
         let cmp    = sCompression s
             params = QueryParams One False () Nothing Nothing Nothing
             kspace = quoted (LT.fromStrict $ unKeyspace ks)
             req    = RqQuery (Query (QueryString $ "use " <> kspace) params)
-        res <- C.request con (serialise cmp req)
+        res <- C.request s t con (serialise cmp req)
         case parse (sCompression s) res :: Response () () () of
             RsResult _ (SetKeyspaceResult _) -> return ()
             other                            -> throw (UnexpectedResponse' other)
 
-    supportedOptions a = do
-        let acquire = C.connect (sConnectTimeout s) a (sCompression s) (sOnEvent s)
+    supportedOptions t a = do
+        let acquire = C.connect s a (sCompression s) (sOnEvent s)
             options = RqOptions Options :: Request () () ()
         bracket acquire C.close $ \c -> do
-            res <- C.request c (serialise noCompression options)
+            res <- C.request s t c (serialise noCompression options)
             case parse (sCompression s) res :: Response () () () of
                 RsSupported _ x -> return x
                 other           -> throw (UnexpectedResponse' other)
 
 shutdown :: MonadIO m => Pool -> m ()
 shutdown p = liftIO $ do
-    P.destroyAllResources (connPool p)
+    P.destroy (connPool p)
     TM.destroy (timeouts p) True
 
 runClient :: MonadIO m => Pool -> Client a -> m a
@@ -141,22 +138,24 @@ request a = do
     p <- ask
     let c = connPool p
         s = settings p
+        t = timeouts p
         f = failures p
     liftIO $ case sMaxWaitQueue s of
-        Nothing -> withResource c (action s)
-        Just  q -> tryWithResource c (go s f) >>= maybe (retry q c s f) return
+        Nothing -> P.with c (transaction s t)
+        Just  q -> P.tryWith c (go s t f) >>= maybe (retry q c s t f) return
   where
-    go s f h = do
+    go s t f h = do
         atomicModifyIORef' f $ \n -> (if n > 0 then n - 1 else 0, ())
-        action s h
+        transaction s t h
 
-    retry q c s f = do
+    retry q c s t f = do
         k <- atomicModifyIORef' f $ \n -> (n + 1, n)
         unless (k < q) $
             throwIO ConnectionsBusy
-        withResource c (go s f)
+        P.with c (go s t f)
 
-    action s h = parse (sCompression s) <$> C.request h (serialise (sCompression s) a)
+    transaction s t h =
+        parse (sCompression s) <$> C.request s t h (serialise (sCompression s) a)
 
 command :: Request k () () -> Client ()
 command r = void (request r)
