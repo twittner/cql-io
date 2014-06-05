@@ -2,18 +2,10 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
--- | A 'TimeoutManager' keeps track of a set of actions which are executed
--- after their individual timeout occured.
---
--- This module is heavily inspired by Warp's
--- <http://hackage.haskell.org/package/warp-2.1.5.1 internal timeout manager>.
 module Database.CQL.IO.Timeouts
-    ( -- * Timeout Manager
-      TimeoutManager
+    ( TimeoutManager
     , create
     , destroy
-
-      -- * Action
     , Action
     , Milliseconds (..)
     , add
@@ -25,8 +17,7 @@ import Control.Concurrent
 import Control.Exception
 import Control.Monad
 import Data.IORef
-
-newtype Milliseconds = Ms Int deriving (Eq, Show)
+import Database.CQL.IO.Types (Milliseconds (..))
 
 data TimeoutManager = TimeoutManager
     { elements  :: Ref [Action]
@@ -40,8 +31,6 @@ data Action = Action
 
 data State = Wait !Int | Canceled
 
--- | Create a timeout manager which checks every given number of
--- milliseconds if an action should be executed.
 create :: Milliseconds -> IO TimeoutManager
 create (Ms n) = do
     e <- spawn [] $ \(Ref r) -> do
@@ -64,8 +53,6 @@ create (Ms n) = do
     newState (Wait k) = Wait (k - 1)
     newState s        = s
 
--- | Stops a 'TimeoutManager' and optionally executes all remaining
--- actions which haven't been canceled if the boolean parameter is @True@.
 destroy :: TimeoutManager -> Bool -> IO ()
 destroy tm exec = mask_ $ term (elements tm) >>= when exec . mapM_ f
   where
@@ -73,17 +60,12 @@ destroy tm exec = mask_ $ term (elements tm) >>= when exec . mapM_ f
         Wait  _ -> ignore (action e)
         _       -> return ()
 
--- | Add some action to be executed after the given number of milliseconds.
---
--- Note that the accuracy is limited by the manager's \"resolution\", i.e.
--- the number of milliseconds given in 'create'.
 add :: TimeoutManager -> Milliseconds -> IO () -> IO Action
 add tm (Ms n) a = do
     r <- Action a <$> newIORef (Wait $ n `div` roundtrip tm)
     atomicModifyIORef' (unref $ elements tm) $ \rr -> (r:rr, ())
     return r
 
--- | Cancels this action, i.e. it will not be executed by this manager.
 cancel :: Action -> IO ()
 cancel a = atomicWriteIORef (state a) Canceled
 
@@ -92,9 +74,6 @@ cancel a = atomicWriteIORef (state a) Canceled
 
 newtype Ref a = Ref { unref :: IORef a }
 
--- Create a 'Ref' with the given initial state and a function which is
--- applied to this 'Ref' in a 'forever' loop with asynchronous exceptions
--- masked. The only way to end this loop is to apply 'term' to this 'Ref'.
 spawn :: a -> (Ref a -> IO ()) -> IO (Ref a)
 spawn a f = do
     r <- Ref <$> newIORef a
@@ -104,8 +83,6 @@ spawn a f = do
     finish :: AsyncException -> IO ()
     finish = const $ return ()
 
--- 'term' replaces the contents of the given 'Ref' with exception throwing
--- code. This will end the asynchronous loop created in 'spawn'.
 term :: Ref a -> IO a
 term (Ref r) = atomicModifyIORef r $ \x -> (throw ThreadKilled, x)
 

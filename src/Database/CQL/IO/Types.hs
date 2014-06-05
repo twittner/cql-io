@@ -2,15 +2,18 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE GADTs              #-}
-{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DeriveDataTypeable         #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GADTs                      #-}
+{-# LANGUAGE StandaloneDeriving         #-}
 
 module Database.CQL.IO.Types where
 
 import Control.Exception (Exception)
 import Data.Typeable
 import Database.CQL.Protocol (Response, CompressionAlgorithm)
+
+newtype Milliseconds = Ms { ms :: Int } deriving (Eq, Show, Num)
 
 -----------------------------------------------------------------------------
 -- InvalidSettings
@@ -53,6 +56,17 @@ instance Show ConnectionError where
     show ConnectionsBusy   = "Database.CQL.IO.ConnectionsBusy"
     show ConnectionClosed  = "Database.CQL.IO.ConnectionClosed"
     show ConnectTimeout    = "Database.CQL.IO.ConnectTimeout"
+
+-----------------------------------------------------------------------------
+-- Timeout
+
+data Timeout = Timeout String
+    deriving Typeable
+
+instance Exception Timeout
+
+instance Show Timeout where
+    show (Timeout e) = "Database.CQL.IO.Timeout: " ++ e
 
 -----------------------------------------------------------------------------
 -- UnexpectedResponse

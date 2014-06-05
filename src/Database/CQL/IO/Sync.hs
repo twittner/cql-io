@@ -7,6 +7,7 @@ module Database.CQL.IO.Sync
     , create
     , get
     , put
+    , kill
     , close
     ) where
 
@@ -15,7 +16,7 @@ import Control.Concurrent.STM
 import Control.Exception (throw)
 import Database.CQL.IO.Types (InternalError (..))
 
-data State a = Empty | Value !a | Closed
+data State a = Empty | Value !a | Killed | Closed
 
 newtype Sync a = Sync (TVar (State a))
 
@@ -29,13 +30,23 @@ get (Sync s) = atomically $ do
         Empty   -> retry
         Value a -> writeTVar s Empty >> return a
         Closed  -> throw $ InternalError "sync closed"
+        Killed  -> throw $ InternalError "sync killed"
 
-put :: Sync a -> a -> IO ()
+put :: Sync a -> a -> IO Bool
 put (Sync s) a = atomically $ do
     v <- readTVar s
     case v of
+        Empty  -> writeTVar s (Value a) >> return True
+        Closed -> return True
+        _      -> writeTVar s Empty     >> return False
+
+kill :: Sync a -> IO ()
+kill (Sync s) = atomically $ do
+    v <- readTVar s
+    case v of
         Closed -> return ()
-        _      -> writeTVar s (Value a)
+        _      -> writeTVar s Killed
 
 close :: Sync a -> IO ()
 close (Sync s) = atomically $ writeTVar s Closed
+

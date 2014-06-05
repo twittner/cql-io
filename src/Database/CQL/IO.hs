@@ -12,10 +12,11 @@ module Database.CQL.IO
     , setKeyspace
     , setIdleTimeout
     , setMaxConnections
+    , setMaxStreams
     , setMaxWaitQueue
     , setPoolStripes
     , setConnectTimeout
-    , setSendRecvTimeout
+    , setResponseTimeout
     , setOnEventHandler
 
     , Pool
@@ -51,6 +52,7 @@ module Database.CQL.IO
     , InternalError      (..)
     , ConnectionError    (..)
     , UnexpectedResponse (..)
+    , Timeout            (..)
     ) where
 
 import Control.Exception (throw)

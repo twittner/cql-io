@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.8
+version:              0.7.7
 synopsis:             CQL client
 stability:            experimental
 license:              OtherLicense
@@ -31,10 +31,12 @@ library
     other-modules:
         Database.CQL.IO.Client
         Database.CQL.IO.Connection
+        Database.CQL.IO.Pool
         Database.CQL.IO.Protocol
         Database.CQL.IO.Settings
         Database.CQL.IO.Sync
         Database.CQL.IO.Tickets
+        Database.CQL.IO.Time
         Database.CQL.IO.Timeouts
         Database.CQL.IO.Types
 
