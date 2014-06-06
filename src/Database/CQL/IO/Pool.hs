@@ -23,6 +23,7 @@ import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad hiding (forM_)
 import Data.Foldable (forM_, find)
+import Data.Function (on)
 import Data.IORef
 import Data.Sequence (Seq, ViewL (..), (|>))
 import Data.Time.Clock (UTCTime, NominalDiffTime, diffUTCTime)
@@ -115,7 +116,7 @@ take1 p = do
         c <- readTVar (conns p)
         u <- readTVar (inUse p)
         let n       = Seq.length c
-            r :< rr = Seq.viewl c
+            r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
         if | u < maxconns p                -> mkNew p u
            | n > 0 && refcnt r < maxRefs p -> use p r rr
            | otherwise                     -> retry
@@ -131,7 +132,7 @@ tryTake1 p = do
         c <- readTVar (conns p)
         u <- readTVar (inUse p)
         let n       = Seq.length c
-            r :< rr = Seq.viewl c
+            r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
         if | u < maxconns p                -> fmap Just <$> mkNew p u
            | n > 0 && refcnt r < maxRefs p -> fmap Just <$> use p r rr
            | otherwise                     -> return (return Nothing)
