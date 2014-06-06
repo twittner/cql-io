@@ -113,11 +113,12 @@ request :: Settings -> TimeoutManager -> Connection -> (Int -> ByteString) -> IO
 request s t c f = do
     m <- myThreadId
     mask $ \restore -> do
+        a <- TM.add t (sSendTimeout s) (close c)
         i <- toInt <$> Tickets.get (tickets c)
         w <- takeMVar (wLock c) `onException` markAvailable (tickets c) i
-        restore (sendAll (sock c) (f i)) `finally` putMVar (wLock c) w
-        a <- TM.add t (sResponseTimeout s) (throwTo m $ Timeout (show c ++ ":" ++ show i))
-        x <- Sync.get (streams c ! i) `onException` Sync.kill (streams c ! i) `finally` TM.cancel a
+        restore (sendAll (sock c) (f i)) `finally` (putMVar (wLock c) w >> TM.cancel a)
+        b <- TM.add t (sResponseTimeout s) (throwTo m $ Timeout (show c ++ ":" ++ show i))
+        x <- Sync.get (streams c ! i) `onException` Sync.kill (streams c ! i) `finally` TM.cancel b
         markAvailable (tickets c) i
         return x
 

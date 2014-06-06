@@ -16,6 +16,7 @@ module Database.CQL.IO
     , setMaxWaitQueue
     , setPoolStripes
     , setConnectTimeout
+    , setSendTimeout
     , setResponseTimeout
     , setOnEventHandler
 

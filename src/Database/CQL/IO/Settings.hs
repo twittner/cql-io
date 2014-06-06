@@ -25,13 +25,14 @@ data Settings = Settings
     , sMaxWaitQueue    :: Maybe Word64
     , sPoolStripes     :: Int
     , sConnectTimeout  :: Milliseconds
+    , sSendTimeout     :: Milliseconds
     , sResponseTimeout :: Milliseconds
     , sOnEvent         :: EventHandler
     }
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 2 1 Nothing 4 5000 10000 handler
+    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 2 1 Nothing 4 5000 3000 10000 handler
 
 setVersion :: CqlVersion -> Settings -> Settings
 setVersion v s = s { sVersion = v }
@@ -65,6 +66,9 @@ setPoolStripes v s = s { sPoolStripes = v }
 
 setConnectTimeout :: NominalDiffTime -> Settings -> Settings
 setConnectTimeout v s = s { sConnectTimeout = Ms $ round (1000 * v) }
+
+setSendTimeout :: NominalDiffTime -> Settings -> Settings
+setSendTimeout v s = s { sSendTimeout = Ms $ round (1000 * v) }
 
 setResponseTimeout :: NominalDiffTime -> Settings -> Settings
 setResponseTimeout v s = s { sResponseTimeout = Ms $ round (1000 * v) }
