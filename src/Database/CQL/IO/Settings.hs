@@ -22,8 +22,8 @@ data Settings = Settings
     , sIdleTimeout     :: NominalDiffTime
     , sMaxConnections  :: Int
     , sMaxStreams      :: Int
-    , sMaxWaitQueue    :: Maybe Word64
     , sPoolStripes     :: Int
+    , sMaxWaitQueue    :: Maybe Word64
     , sConnectTimeout  :: Milliseconds
     , sSendTimeout     :: Milliseconds
     , sResponseTimeout :: Milliseconds
@@ -32,7 +32,7 @@ data Settings = Settings
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 2 1 Nothing 4 5000 3000 10000 handler
+    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 2 128 4 Nothing 5000 3000 10000 handler
 
 setVersion :: CqlVersion -> Settings -> Settings
 setVersion v s = s { sVersion = v }
@@ -52,17 +52,23 @@ setKeyspace v s = s { sKeyspace = Just v }
 setIdleTimeout :: NominalDiffTime -> Settings -> Settings
 setIdleTimeout v s = s { sIdleTimeout = v }
 
+-- | Maximum connections per pool stripe.
 setMaxConnections :: Int -> Settings -> Settings
 setMaxConnections v s = s { sMaxConnections = v }
 
+-- | Maximum streams per connection.
 setMaxStreams :: Int -> Settings -> Settings
-setMaxStreams v s = s { sMaxStreams = v }
+setMaxStreams v s
+    | v < 1 || v > 128 = error "Database.CQL.IO.Settings: streams must be within [1, 128]"
+    | otherwise        = s { sMaxStreams = v }
 
 setMaxWaitQueue :: Word64 -> Settings -> Settings
 setMaxWaitQueue v s = s { sMaxWaitQueue = Just v }
 
 setPoolStripes :: Int -> Settings -> Settings
-setPoolStripes v s = s { sPoolStripes = v }
+setPoolStripes v s
+    | v < 1     = error "Database.CQL.IO.Settings: stripes must be greater than 0"
+    | otherwise = s { sPoolStripes = v }
 
 setConnectTimeout :: NominalDiffTime -> Settings -> Settings
 setConnectTimeout v s = s { sConnectTimeout = Ms $ round (1000 * v) }
