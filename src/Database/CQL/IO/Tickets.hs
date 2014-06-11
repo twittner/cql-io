@@ -14,7 +14,6 @@ module Database.CQL.IO.Tickets
 
 import Control.Applicative
 import Control.Concurrent.STM
-import Control.Exception
 import Control.Monad
 import Data.Set (Set)
 import Database.CQL.IO.Types (InternalError (..))
@@ -34,7 +33,7 @@ close (Pool p) = void . atomically $ swapTVar p Nothing
 get :: Pool -> IO Ticket
 get (Pool p) = atomically $ readTVar p >>= popHead
   where
-    popHead Nothing  = throw $ InternalError "ticket pool closed"
+    popHead Nothing  = throwSTM $ InternalError "ticket pool closed"
     popHead (Just x)
         | Set.null x = retry
         | otherwise  = do

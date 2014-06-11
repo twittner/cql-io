@@ -13,7 +13,6 @@ module Database.CQL.IO.Sync
 
 import Control.Applicative
 import Control.Concurrent.STM
-import Control.Exception (throw)
 import Database.CQL.IO.Types (InternalError (..))
 
 data State a = Empty | Value !a | Killed | Closed
@@ -29,8 +28,8 @@ get (Sync s) = atomically $ do
     case v of
         Empty   -> retry
         Value a -> writeTVar s Empty >> return a
-        Closed  -> throw $ InternalError "sync closed"
-        Killed  -> throw $ InternalError "sync killed"
+        Closed  -> throwSTM $ InternalError "sync closed"
+        Killed  -> throwSTM $ InternalError "sync killed"
 
 put :: Sync a -> a -> IO Bool
 put (Sync s) a = atomically $ do
