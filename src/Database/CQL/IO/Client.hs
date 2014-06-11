@@ -18,7 +18,6 @@ module Database.CQL.IO.Client
     ) where
 
 import Control.Applicative
-import Control.Exception (throw, throwIO)
 import Control.Monad.IO.Class
 import Control.Monad.Catch
 import Control.Monad.Reader
@@ -81,7 +80,7 @@ mkPool g s = liftIO $ do
         Supported ca _ <- supportedOptions t addr
         let c = algorithm (sCompression s)
         unless (c == None || c `elem` ca) $
-            throw $ UnsupportedCompression ca
+            throwM $ UnsupportedCompression ca
         return addr
 
     connOpen t a = do
@@ -115,7 +114,7 @@ mkPool g s = liftIO $ do
         res <- C.request s t con (serialise cmp req)
         case parse (sCompression s) res :: Response () () () of
             RsResult _ (SetKeyspaceResult _) -> return ()
-            other                            -> throw (UnexpectedResponse' other)
+            other                            -> throwM (UnexpectedResponse' other)
 
     supportedOptions t a = do
         let acquire = C.connect s a (sCompression s) (sOnEvent s)
@@ -124,7 +123,7 @@ mkPool g s = liftIO $ do
             res <- C.request s t c (serialise noCompression options)
             case parse (sCompression s) res :: Response () () () of
                 RsSupported _ x -> return x
-                other           -> throw (UnexpectedResponse' other)
+                other           -> throwM (UnexpectedResponse' other)
 
 shutdown :: MonadIO m => Pool -> m ()
 shutdown p = liftIO $ do
@@ -152,7 +151,7 @@ request a = do
     retry q c s t f = do
         k <- atomicModifyIORef' f $ \n -> (n + 1, n)
         unless (k < q) $
-            throwIO ConnectionsBusy
+            throwM ConnectionsBusy
         P.with c (go s t f)
 
     transaction s t h =

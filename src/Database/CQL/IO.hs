@@ -56,7 +56,7 @@ module Database.CQL.IO
     , Timeout            (..)
     ) where
 
-import Control.Exception (throw)
+import Control.Monad.Catch
 import Control.Monad (void)
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
@@ -70,7 +70,7 @@ query' :: (Tuple a, Tuple b) => QueryString k a b -> QueryParams a -> Client (Re
 query' q p = do
     r <- request (RqQuery (Query q p))
     case r of
-        RsError _ e -> throw e
+        RsError _ e -> throwM e
         _           -> return r
 
 query :: (Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> Client [b]
@@ -78,7 +78,7 @@ query q p = do
     r <- query' q p
     case r of
         RsResult _ (RowsResult _ b) -> return b
-        _                           -> throw UnexpectedResponse
+        _                           -> throwM UnexpectedResponse
 
 write :: (Tuple a) => QueryString W a () -> QueryParams a -> Client ()
 write q p = void $ query' q p
@@ -88,7 +88,7 @@ schema x y = do
     r <- query' x y
     case r of
         RsResult _ (SchemaChangeResult s) -> return s
-        _                                 -> throw UnexpectedResponse
+        _                                 -> throwM UnexpectedResponse
 
 ------------------------------------------------------------------------------
 -- prepare
@@ -98,8 +98,8 @@ prepare' q = do
     r <- request (RqPrepare (Prepare q))
     case r of
         RsResult _ (PreparedResult i _ _) -> return i
-        RsError _ e                       -> throw e
-        _                                 -> throw UnexpectedResponse
+        RsError _ e                       -> throwM e
+        _                                 -> throwM UnexpectedResponse
 
 prepare :: (Tuple a, Tuple b) => QueryString R a b -> Client (QueryId R a b)
 prepare = prepare'
@@ -117,7 +117,7 @@ execute' :: (Tuple a, Tuple b) => QueryId k a b -> QueryParams a -> Client (Resp
 execute' q p = do
     r <- request (RqExecute (Execute q p))
     case r of
-        RsError  _ e -> throw e
+        RsError  _ e -> throwM e
         _            -> return r
 
 execute :: (Tuple a, Tuple b) => QueryId R a b -> QueryParams a -> Client [b]
@@ -125,7 +125,7 @@ execute q p = do
     r <- execute' q p
     case r of
         RsResult _ (RowsResult _ b) -> return b
-        _                           -> throw UnexpectedResponse
+        _                           -> throwM UnexpectedResponse
 
 executeWrite :: (Tuple a) => QueryId W a () -> QueryParams a -> Client ()
 executeWrite q p = void $ execute' q p
@@ -135,7 +135,7 @@ executeSchema q p = do
     r <- execute' q p
     case r of
         RsResult _ (SchemaChangeResult s) -> return s
-        _                                 -> throw UnexpectedResponse
+        _                                 -> throwM UnexpectedResponse
 
 batch :: Consistency -> BatchType -> [BatchQuery] -> Client ()
 batch c t q = command (RqBatch (Batch t q c))
