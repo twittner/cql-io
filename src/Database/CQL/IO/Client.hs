@@ -86,7 +86,7 @@ mkPool g s = liftIO $ do
         return addr
 
     connOpen t a = do
-        Logger.debug g $ "Database.CQL.IO.Client.connOpen" .= sHost s
+        Logger.debug g $ "Client.connOpen" .= sHost s
         c <- C.connect (sConnectTimeout s) a
         x <- TM.add t (Ms $ sSendRecvTimeout s * 2) (C.close c)
         connInit c `finally` TM.cancel x
@@ -98,7 +98,7 @@ mkPool g s = liftIO $ do
         return c
 
     connClose c = do
-        Logger.debug g $ "Database.CQL.IO.Client.connClose" .= sHost s
+        Logger.debug g $ "Client.connClose" .= sHost s
         C.close c
 
     startup con = do
@@ -161,7 +161,7 @@ request a = do
 
     transaction g s t h = do
         x <- TM.add t (Ms $ sSendRecvTimeout s) $ do
-            Logger.debug g $ msg (val "Database.CQL.IO.Client.request: timeout")
+            Logger.debug g $ msg (val "Client.request: timeout")
             C.close h
         finally (send (sCompression s) h a >> receive s h)
                 (TM.cancel x)
