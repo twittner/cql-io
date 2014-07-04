@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.7.4.1
+version:              0.7.5
 synopsis:             CQL client
 stability:            experimental
 license:              OtherLicense
@@ -45,7 +45,7 @@ library
         , network         >= 2.4     && < 2.6
         , resource-pool   == 0.2.*
         , text            >= 0.11    && < 1.2
-        , tinylog         >= 0.8     && < 0.10
+        , tinylog         >= 0.8     && < 0.11
         , time            == 1.4.*
         , tagged          == 0.7.*
         , transformers    >= 0.3     && < 0.5
