@@ -33,7 +33,7 @@ import Database.CQL.IO.Connection (Connection)
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Timeouts (TimeoutManager, Milliseconds (..))
 import Database.CQL.IO.Types
-import System.Logger.Class hiding (Settings, defSettings)
+import System.Logger.Class (MonadLogger (..), Logger, (.=), msg, val)
 
 import qualified Data.Text.Lazy             as LT
 import qualified Data.Pool                  as P
