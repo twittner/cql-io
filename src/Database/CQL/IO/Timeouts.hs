@@ -10,17 +10,22 @@ module Database.CQL.IO.Timeouts
     , Milliseconds (..)
     , add
     , cancel
+    , withTimeout
     ) where
 
 import Control.Applicative
 import Control.Concurrent
-import Control.Exception
+import Control.Concurrent.Async (Async, async)
+import Control.Exception (mask_, bracket)
 import Control.Monad
 import Data.IORef
-import Database.CQL.IO.Types (Milliseconds (..))
+import Database.CQL.IO.Types (Milliseconds (..), ignore)
+
+import qualified Control.Concurrent.Async as Async
 
 data TimeoutManager = TimeoutManager
-    { elements  :: Ref [Action]
+    { elements  :: IORef [Action]
+    , loop      :: Async ()
     , roundtrip :: !Int
     }
 
@@ -33,12 +38,14 @@ data State = Wait !Int | Canceled
 
 create :: Milliseconds -> IO TimeoutManager
 create (Ms n) = do
-    e <- spawn [] $ \(Ref r) -> do
-        threadDelay (n * 1000)
-        prev <- atomicModifyIORef' r $ \x -> ([], x)
-        next <- prune prev id
-        atomicModifyIORef' r $ \x -> (next x, ())
-    return $ TimeoutManager e n
+    r <- newIORef []
+    l <- async $ forever $ do
+            threadDelay (n * 1000)
+            mask_ $ do
+                prev <- atomicModifyIORef' r $ \x -> ([], x)
+                next <- prune prev id
+                atomicModifyIORef' r $ \x -> (next x, ())
+    return $ TimeoutManager r l n
   where
     prune []     front = return front
     prune (a:aa) front = do
@@ -54,7 +61,10 @@ create (Ms n) = do
     newState s        = s
 
 destroy :: TimeoutManager -> Bool -> IO ()
-destroy tm exec = mask_ $ term (elements tm) >>= when exec . mapM_ f
+destroy tm exec = do
+    Async.cancel (loop tm)
+    when exec $
+        readIORef (elements tm) >>= mapM_ f
   where
     f e = readIORef (state e) >>= \s -> case s of
         Wait  _ -> ignore (action e)
@@ -63,29 +73,11 @@ destroy tm exec = mask_ $ term (elements tm) >>= when exec . mapM_ f
 add :: TimeoutManager -> Milliseconds -> IO () -> IO Action
 add tm (Ms n) a = do
     r <- Action a <$> newIORef (Wait $ n `div` roundtrip tm)
-    atomicModifyIORef' (unref $ elements tm) $ \rr -> (r:rr, ())
+    atomicModifyIORef' (elements tm) $ \rr -> (r:rr, ())
     return r
 
 cancel :: Action -> IO ()
 cancel a = atomicWriteIORef (state a) Canceled
 
------------------------------------------------------------------------------
--- Internal
-
-newtype Ref a = Ref { unref :: IORef a }
-
-spawn :: a -> (Ref a -> IO ()) -> IO (Ref a)
-spawn a f = do
-    r <- Ref <$> newIORef a
-    _ <- forkIO $ forever (mask_ (f r)) `catch` finish
-    return r
-  where
-    finish :: AsyncException -> IO ()
-    finish = const $ return ()
-
-term :: Ref a -> IO a
-term (Ref r) = atomicModifyIORef r $ \x -> (throw ThreadKilled, x)
-
-ignore :: IO () -> IO ()
-ignore a = catch a (const $ return () :: SomeException -> IO ())
-
+withTimeout :: TimeoutManager -> Milliseconds -> IO () -> IO a -> IO a
+withTimeout tm m x a = bracket (add tm m x) cancel $ const a
