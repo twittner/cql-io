@@ -20,6 +20,7 @@ module Database.CQL.IO.Pool
 
 import Control.Applicative
 import Control.Concurrent
+import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad hiding (forM_, mapM_)
@@ -33,7 +34,7 @@ import Data.Time.Clock (UTCTime, NominalDiffTime, diffUTCTime)
 import Data.Vector (Vector, (!))
 import Database.CQL.IO.Connection (Connection)
 import Database.CQL.IO.Time (TimeCache)
-import Database.CQL.IO.Types (Timeout)
+import Database.CQL.IO.Types (Timeout, ignore)
 
 import qualified Data.Sequence        as Seq
 import qualified Data.Vector          as Vec
@@ -81,8 +82,8 @@ create mk del (MaxRes n) (MaxRef k) (Stripes s) t = do
             <$> Time.create
             <*> Vec.replicateM s (Stripe <$> newTVarIO Seq.empty <*> newTVarIO 0)
             <*> newIORef ()
-    r <- forkIO $ reaper p
-    void $ mkWeakIORef (finaliser p) (killThread r >> destroy p)
+    r <- async $ reaper p
+    void $ mkWeakIORef (finaliser p) (cancel r >> destroy p)
     return p
 
 destroy :: Pool -> IO ()
@@ -208,8 +209,4 @@ reaper p = forever $ do
 stripe :: Pool -> IO Stripe
 stripe p = (stripes p !) <$> ((`mod` hash (nStripes p)) . hash) <$> myThreadId
 {-# INLINE stripe #-}
-
-ignore :: IO () -> IO ()
-ignore a = catch a (const $ return () :: SomeException -> IO ())
-{-# INLINE ignore #-}
 

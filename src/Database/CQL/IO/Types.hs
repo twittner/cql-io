@@ -9,7 +9,7 @@
 
 module Database.CQL.IO.Types where
 
-import Control.Exception (Exception)
+import Control.Exception (Exception, SomeException, catch)
 import Data.Typeable
 import Database.CQL.Protocol (Response, CompressionAlgorithm)
 
@@ -81,4 +81,8 @@ instance Exception UnexpectedResponse
 instance Show UnexpectedResponse where
     show UnexpectedResponse      = "Database.CQL.IO.UnexpectedResponse"
     show (UnexpectedResponse' r) = "Database.CQL.IO.UnexpectedResponse: " ++ show r
+
+ignore :: IO () -> IO ()
+ignore a = catch a (const $ return () :: SomeException -> IO ())
+{-# INLINE ignore #-}
 

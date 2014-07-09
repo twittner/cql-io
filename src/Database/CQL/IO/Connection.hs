@@ -31,9 +31,9 @@ import Database.CQL.IO.Settings
 import Database.CQL.IO.Sync (Sync)
 import Database.CQL.IO.Types
 import Database.CQL.IO.Tickets (Pool, toInt, markAvailable)
-import Database.CQL.IO.Timeouts (TimeoutManager)
+import Database.CQL.IO.Timeouts (TimeoutManager, withTimeout)
 import Network
-import Network.Socket hiding (connect, close, recv)
+import Network.Socket hiding (connect, close, recv, send)
 import Network.Socket.ByteString.Lazy (sendAll)
 import System.Timeout
 
@@ -42,7 +42,6 @@ import qualified Data.ByteString.Lazy      as L
 import qualified Data.Vector               as Vector
 import qualified Database.CQL.IO.Sync      as Sync
 import qualified Database.CQL.IO.Tickets   as Tickets
-import qualified Database.CQL.IO.Timeouts  as TM
 import qualified Network.Socket            as S
 import qualified Network.Socket.ByteString as NB
 
@@ -110,17 +109,21 @@ close :: Connection -> IO ()
 close = cancel . reader
 
 request :: Settings -> TimeoutManager -> Connection -> (Int -> ByteString) -> IO (Header, ByteString)
-request s t c f = do
-    m <- myThreadId
-    mask $ \restore -> do
-        a <- TM.add t (sSendTimeout s) (close c)
+request s t c f = send >>= receive
+  where
+    send = withTimeout t (sSendTimeout s) (close c) $ do
         i <- toInt <$> Tickets.get (tickets c)
-        w <- takeMVar (wLock c) `onException` markAvailable (tickets c) i
-        restore (sendAll (sock c) (f i)) `finally` (putMVar (wLock c) w >> TM.cancel a)
-        b <- TM.add t (sResponseTimeout s) (throwTo m $ Timeout (show c ++ ":" ++ show i))
-        x <- Sync.get (streams c ! i) `onException` Sync.kill (streams c ! i) `finally` TM.cancel b
-        markAvailable (tickets c) i
-        return x
+        withMVar (wLock c) $
+            const $ sendAll (sock c) (f i)
+        return i
+
+    receive i = do
+        let e = Timeout (show c ++ ":" ++ show i)
+        tid <- myThreadId
+        withTimeout t (sResponseTimeout s) (throwTo tid e) $ do
+            x <- Sync.get (streams c ! i) `onException` Sync.kill (streams c ! i)
+            markAvailable (tickets c) i
+            return x
 
 readSocket :: Socket -> IO (Header, ByteString)
 readSocket s = do
