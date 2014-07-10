@@ -39,6 +39,7 @@ library
         Database.CQL.IO.Time
         Database.CQL.IO.Timeouts
         Database.CQL.IO.Types
+        Database.CQL.IO.Hexdump
 
     build-depends:
           async        == 2.0.*
