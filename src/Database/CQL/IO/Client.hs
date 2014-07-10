@@ -85,7 +85,7 @@ mkPool g s = liftIO $ do
 
     connOpen t a = do
         Logger.debug g $ "client.connect" .= sHost s
-        c <- C.connect s a (sCompression s) (sOnEvent s)
+        c <- C.connect s g a (sCompression s) (sOnEvent s)
         connInit t c
 
     connInit t c = flip onException (C.close c) $ do
@@ -117,7 +117,7 @@ mkPool g s = liftIO $ do
             other                            -> throwM (UnexpectedResponse' other)
 
     supportedOptions t a = do
-        let acquire = C.connect s a (sCompression s) (sOnEvent s)
+        let acquire = C.connect s g a (sCompression s) (sOnEvent s)
             options = RqOptions Options :: Request () () ()
         bracket acquire C.close $ \c -> do
             res <- C.request s t c (serialise noCompression options)

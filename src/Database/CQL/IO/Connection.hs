@@ -2,7 +2,8 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE BangPatterns      #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Database.CQL.IO.Connection
     ( Connection
@@ -20,21 +21,26 @@ import Control.Exception
 import Control.Monad
 import Data.ByteString.Builder
 import Data.ByteString.Lazy (ByteString)
+import Data.Int
 import Data.Maybe (isJust)
 import Data.Monoid
 import Data.Unique
 import Data.Vector (Vector, (!))
 import Data.Word
 import Database.CQL.Protocol
+import Database.CQL.IO.Hexdump
 import Database.CQL.IO.Protocol
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Sync (Sync)
 import Database.CQL.IO.Types
 import Database.CQL.IO.Tickets (Pool, toInt, markAvailable)
 import Database.CQL.IO.Timeouts (TimeoutManager, withTimeout)
+import Foreign.C.Types (CInt (..))
 import Network
 import Network.Socket hiding (connect, close, recv, send)
 import Network.Socket.ByteString.Lazy (sendAll)
+import System.IO (nativeNewline, Newline (..))
+import System.Logger hiding (Settings, close)
 import System.Timeout
 
 import qualified Data.ByteString           as B
@@ -53,6 +59,7 @@ data Connection = Connection
     , wLock   :: MVar ()
     , reader  :: Async ()
     , tickets :: !Pool
+    , logger  :: !Logger
     , ident   :: !Unique
     }
 
@@ -68,8 +75,8 @@ resolve host port =
   where
     hints = defaultHints { addrFlags = [AI_ADDRCONFIG], addrSocketType = Stream }
 
-connect :: Settings -> AddrInfo -> Compression -> EventHandler -> IO Connection
-connect t a c f =
+connect :: Settings -> Logger -> AddrInfo -> Compression -> EventHandler -> IO Connection
+connect t g a c f =
     bracketOnError mkSock S.close $ \s -> do
         ok <- timeout (ms (sConnectTimeout t) * 1000) (S.connect s (addrAddress a))
         unless (isJust ok) $
@@ -81,14 +88,14 @@ connect t a c f =
         tck <- Tickets.pool (sMaxStreams t)
         syn <- Vector.replicateM (sMaxStreams t) Sync.create
         lck <- newMVar ()
-        rdr <- async (runReader c f tck s syn)
-        Connection s syn lck rdr tck <$> newUnique
+        rdr <- async (runReader g c f tck s syn)
+        Connection s syn lck rdr tck g <$> newUnique
 
-runReader :: Compression -> EventHandler -> Pool -> Socket -> Streams -> IO ()
-runReader cmp fn tck sck syn = run `finally` cleanup
+runReader :: Logger -> Compression -> EventHandler -> Pool -> Socket -> Streams -> IO ()
+runReader g cmp fn tck sck syn = run `finally` cleanup
   where
     run = forever $ do
-        x <- readSocket sck
+        x <- readSocket g sck
         case streamId (fst x) of
             StreamId (-1) ->
                 case parse cmp x :: Response () () () of
@@ -113,8 +120,13 @@ request s t c f = send >>= receive
   where
     send = withTimeout t (sSendTimeout s) (close c) $ do
         i <- toInt <$> Tickets.get (tickets c)
+        let req = f i
+        trace (logger c) $ "socket" .= fd (sock c)
+            ~~ "stream" .= i
+            ~~ "type"   .= val "request"
+            ~~ msg' (hexdump req)
         withMVar (wLock c) $
-            const $ sendAll (sock c) (f i)
+            const $ sendAll (sock c) req
         return i
 
     receive i = do
@@ -125,8 +137,8 @@ request s t c f = send >>= receive
             markAvailable (tickets c) i
             return x
 
-readSocket :: Socket -> IO (Header, ByteString)
-readSocket s = do
+readSocket :: Logger -> Socket -> IO (Header, ByteString)
+readSocket g s = do
     b <- recv 8 s
     h <- case header b of
             Left  e -> throwIO $ InternalError ("response header reading: " ++ e)
@@ -136,17 +148,30 @@ readSocket s = do
         RsHeader -> do
             let len = lengthRepr (bodyLength h)
             x <- recv (fromIntegral len) s
+            trace g $ "socket" .= fd s
+                ~~ "stream" .= streamRepr (streamId h)
+                ~~ "type"   .= val "response"
+                ~~ msg' (hexdump $ b <> x)
             return (h, x)
 
 recv :: Int -> Socket -> IO ByteString
 recv 0 _ = return L.empty
 recv n c = toLazyByteString <$> go 0 mempty
   where
-    go !k !bytes = do
+    go !k !bb = do
         a <- NB.recv c (n - k)
         when (B.null a) $
             throwIO ConnectionClosed
-        let b = bytes <> byteString a
+        let b = bb <> byteString a
             m = B.length a + k
         if m < n then go m b else return b
 
+-- logging helpers:
+
+fd :: Socket -> Int32
+fd !s = let CInt !n = fdSocket s in n
+
+msg' :: ByteString -> Msg -> Msg
+msg' x = msg $ case nativeNewline of
+    LF   -> val "\n"   +++ x
+    CRLF -> val "\r\n" +++ x
