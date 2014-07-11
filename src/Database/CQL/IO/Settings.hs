@@ -32,7 +32,7 @@ data Settings = Settings
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 2 128 4 Nothing 5000 3000 10000 handler
+    Settings Cqlv300 noCompression "localhost" 9042 Nothing 30 2 128 4 Nothing 5000 3000 10000 handler
 
 setVersion :: CqlVersion -> Settings -> Settings
 setVersion v s = s { sVersion = v }
