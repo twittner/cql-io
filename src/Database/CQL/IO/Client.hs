@@ -67,6 +67,7 @@ mkPool g s = liftIO $ do
     a <- validateSettings t
     Pool s <$> P.create (connOpen t a)
                         connClose
+                        g
                         (P.MaxRes  $ sMaxConnections s)
                         (P.MaxRef  $ sMaxStreams s)
                         (P.Stripes $ sPoolStripes s)

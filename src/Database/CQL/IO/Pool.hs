@@ -35,6 +35,7 @@ import Data.Vector (Vector, (!))
 import Database.CQL.IO.Connection (Connection)
 import Database.CQL.IO.Time (TimeCache)
 import Database.CQL.IO.Types (Timeout, ignore)
+import System.Logger hiding (create)
 
 import qualified Data.Sequence        as Seq
 import qualified Data.Vector          as Vec
@@ -52,6 +53,7 @@ data Resource = Resource
 data Pool = Pool
     { createFn  :: IO Connection
     , destroyFn :: Connection -> IO ()
+    , logger    :: Logger
     , maxconns  :: Int
     , maxRefs   :: Int
     , nStripes  :: Int
@@ -72,13 +74,14 @@ newtype Stripes = Stripes Int
 
 create :: IO Connection
        -> (Connection -> IO ())
+       -> Logger
        -> MaxRes
        -> MaxRef
        -> Stripes
        -> NominalDiffTime
        -> IO Pool
-create mk del (MaxRes n) (MaxRef k) (Stripes s) t = do
-    p <- Pool mk del n k s t
+create mk del g (MaxRes n) (MaxRef k) (Stripes s) t = do
+    p <- Pool mk del g n k s t
             <$> Time.create
             <*> Vec.replicateM s (Stripe <$> newTVarIO Seq.empty <*> newTVarIO 0)
             <*> newIORef ()
@@ -96,7 +99,7 @@ with p f = do
     s <- stripe p
     mask $ \restore -> do
         r <- take1 p s
-        x <- restore (f (value r)) `catches` handlers (put p s r) (destroyR p s r)
+        x <- restore (f (value r)) `catches` handlers (destroyR p s r)
         put p s r
         return x
 
@@ -107,7 +110,7 @@ tryWith p f = do
         r <- tryTake1 p s
         case r of
             Just  v -> do
-                x <- restore (f (value v)) `catches` handlers (put p s v) (destroyR p s v)
+                x <- restore (f (value v)) `catches` handlers (destroyR p s v)
                 put p s v
                 return (Just x)
             Nothing -> return Nothing
@@ -119,9 +122,9 @@ purge p = Vec.forM_ (stripes p) $ \s ->
 -----------------------------------------------------------------------------
 -- Internal
 
-handlers :: IO () -> IO () -> [Handler a]
-handlers putBack delete =
-    [ Handler $ \(x :: Timeout)       -> putBack >> throwIO x
+handlers :: IO () -> [Handler a]
+handlers delete =
+    [ Handler $ \(x :: Timeout)       -> throwIO x
     , Handler $ \(x :: SomeException) -> delete  >> throwIO x
     ]
 
@@ -197,14 +200,17 @@ reaper :: Pool -> IO ()
 reaper p = forever $ do
     threadDelay 1000000
     now <- Time.currentTime (tcache p)
-    let isStale r = refcnt r == 0 && now `diffUTCTime` tstamp r > idleTime p
+    let isStale r = now `diffUTCTime` tstamp r > idleTime p
     Vec.forM_ (stripes p) $ \s -> do
         x <- atomically $ do
                 (stale, okay) <- Seq.partition isStale <$> readTVar (conns s)
-                unless (Seq.null stale) $
-                    writeTVar (conns s) okay
+                unless (Seq.null stale) $ do
+                    writeTVar  (conns s) okay
+                    modifyTVar (inUse s) (subtract (Seq.length stale))
                 return stale
-        forM_ x $ \v -> ignore $ destroyFn p (value v)
+        forM_ x $ \v -> ignore $ do
+            trace (logger p) $ "reap" .= show (value v)
+            destroyFn p (value v)
 
 stripe :: Pool -> IO Stripe
 stripe p = (stripes p !) <$> ((`mod` hash (nStripes p)) . hash) <$> myThreadId
