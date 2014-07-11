@@ -124,7 +124,7 @@ request s t c f = send >>= receive
         trace (logger c) $ "socket" .= fd (sock c)
             ~~ "stream" .= i
             ~~ "type"   .= val "request"
-            ~~ msg' (hexdump req)
+            ~~ msg' (hexdump (L.take 160 req))
         withMVar (wLock c) $
             const $ sendAll (sock c) req
         return i
@@ -151,7 +151,7 @@ readSocket g s = do
             trace g $ "socket" .= fd s
                 ~~ "stream" .= streamRepr (streamId h)
                 ~~ "type"   .= val "response"
-                ~~ msg' (hexdump $ b <> x)
+                ~~ msg' (hexdump $ L.take 160 (b <> x))
             return (h, x)
 
 recv :: Int -> Socket -> IO ByteString
