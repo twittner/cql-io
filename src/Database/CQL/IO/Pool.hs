@@ -99,7 +99,7 @@ with p f = do
     s <- stripe p
     mask $ \restore -> do
         r <- take1 p s
-        x <- restore (f (value r)) `catches` handlers (destroyR p s r)
+        x <- restore (f (value r)) `catches` handlers (put p s r) (destroyR p s r)
         put p s r
         return x
 
@@ -110,7 +110,7 @@ tryWith p f = do
         r <- tryTake1 p s
         case r of
             Just  v -> do
-                x <- restore (f (value v)) `catches` handlers (destroyR p s v)
+                x <- restore (f (value v)) `catches` handlers (put p s v) (destroyR p s v)
                 put p s v
                 return (Just x)
             Nothing -> return Nothing
@@ -122,9 +122,9 @@ purge p = Vec.forM_ (stripes p) $ \s ->
 -----------------------------------------------------------------------------
 -- Internal
 
-handlers :: IO () -> [Handler a]
-handlers delete =
-    [ Handler $ \(x :: Timeout)       -> throwIO x
+handlers :: IO () -> IO () -> [Handler a]
+handlers putBack delete =
+    [ Handler $ \(x :: Timeout)       -> putBack >> throwIO x
     , Handler $ \(x :: SomeException) -> delete  >> throwIO x
     ]
 
@@ -134,7 +134,7 @@ take1 p s = do
         c <- readTVar (conns s)
         u <- readTVar (inUse s)
         let n       = Seq.length c
-            r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
+        let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
         if | u < maxconns p                -> mkNew p s u
            | n > 0 && refcnt r < maxRefs p -> use s r rr
            | otherwise                     -> retry
@@ -150,16 +150,16 @@ tryTake1 p s = do
         c <- readTVar (conns s)
         u <- readTVar (inUse s)
         let n       = Seq.length c
-            r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
+        let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
         if | u < maxconns p                -> fmap Just <$> mkNew p s u
            | n > 0 && refcnt r < maxRefs p -> fmap Just <$> use s r rr
            | otherwise                     -> return (return Nothing)
     case r of
-        (Just (Left  x)) -> do
+        Just (Left  x) -> do
             atomically (modifyTVar (conns s) (|> x))
             return (Just x)
-        (Just (Right x)) -> return (Just x)
-        Nothing          -> return Nothing
+        Just (Right x) -> return (Just x)
+        Nothing        -> return Nothing
 
 use :: Stripe -> Resource -> Seq Resource -> STM (IO (Either Resource Resource))
 use s r rr = do
@@ -200,7 +200,7 @@ reaper :: Pool -> IO ()
 reaper p = forever $ do
     threadDelay 1000000
     now <- Time.currentTime (tcache p)
-    let isStale r = now `diffUTCTime` tstamp r > idleTime p
+    let isStale r = refcnt r == 0 && now `diffUTCTime` tstamp r > idleTime p
     Vec.forM_ (stripes p) $ \s -> do
         x <- atomically $ do
                 (stale, okay) <- Seq.partition isStale <$> readTVar (conns s)
