@@ -70,6 +70,7 @@ mkPool g s = liftIO $ do
                         g
                         (P.MaxRes  $ sMaxConnections s)
                         (P.MaxRef  $ sMaxStreams s)
+                        (P.MaxTout $ sMaxTimeouts s)
                         (P.Stripes $ sPoolStripes s)
                         (sIdleTimeout s)
            <*> pure g

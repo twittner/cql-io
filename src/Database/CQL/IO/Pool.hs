@@ -8,9 +8,10 @@
 
 module Database.CQL.IO.Pool
     ( Pool
-    , MaxRes  (..)
-    , MaxRef  (..)
-    , Stripes (..)
+    , MaxRes      (..)
+    , MaxRef      (..)
+    , MaxTimeouts (..)
+    , Stripes     (..)
     , create
     , destroy
     , purge
@@ -29,7 +30,7 @@ import Data.Function (on)
 import Data.Hashable
 import Data.IORef
 import Prelude hiding (mapM_)
-import Data.Sequence (Seq, ViewL (..), (|>))
+import Data.Sequence (Seq, ViewL (..), (|>), (><))
 import Data.Time.Clock (UTCTime, NominalDiffTime, diffUTCTime)
 import Data.Vector (Vector, (!))
 import Database.CQL.IO.Connection (Connection)
@@ -45,22 +46,24 @@ import qualified Database.CQL.IO.Time as Time
 -- API
 
 data Resource = Resource
-    { tstamp :: !UTCTime
-    , refcnt :: !Int
-    , value  :: !Connection
+    { tstamp   :: !UTCTime
+    , refcnt   :: !Int
+    , timeouts :: !Int
+    , value    :: !Connection
     } deriving Show
 
 data Pool = Pool
-    { createFn  :: IO Connection
-    , destroyFn :: Connection -> IO ()
-    , logger    :: Logger
-    , maxconns  :: Int
-    , maxRefs   :: Int
-    , nStripes  :: Int
-    , idleTime  :: NominalDiffTime
-    , tcache    :: TimeCache
-    , stripes   :: Vector Stripe
-    , finaliser :: IORef ()
+    { createFn    :: IO Connection
+    , destroyFn   :: Connection -> IO ()
+    , logger      :: Logger
+    , maxConns    :: Int
+    , maxRefs     :: Int
+    , maxTimeouts :: Int
+    , nStripes    :: Int
+    , idleTime    :: NominalDiffTime
+    , tcache      :: TimeCache
+    , stripes     :: Vector Stripe
+    , finaliser   :: IORef ()
     }
 
 data Stripe = Stripe
@@ -68,20 +71,22 @@ data Stripe = Stripe
     , inUse :: TVar Int
     }
 
-newtype MaxRes  = MaxRes Int
-newtype MaxRef  = MaxRef Int
-newtype Stripes = Stripes Int
+newtype MaxRes      = MaxRes Int
+newtype MaxRef      = MaxRef Int
+newtype MaxTimeouts = MaxTout Int
+newtype Stripes     = Stripes Int
 
 create :: IO Connection
        -> (Connection -> IO ())
        -> Logger
        -> MaxRes
        -> MaxRef
+       -> MaxTimeouts
        -> Stripes
        -> NominalDiffTime
        -> IO Pool
-create mk del g (MaxRes n) (MaxRef k) (Stripes s) t = do
-    p <- Pool mk del g n k s t
+create mk del g (MaxRes n) (MaxRef k) (MaxTout a) (Stripes s) t = do
+    p <- Pool mk del g n k a s t
             <$> Time.create
             <*> Vec.replicateM s (Stripe <$> newTVarIO Seq.empty <*> newTVarIO 0)
             <*> newIORef ()
@@ -99,8 +104,8 @@ with p f = do
     s <- stripe p
     mask $ \restore -> do
         r <- take1 p s
-        x <- restore (f (value r)) `catches` handlers (put p s r) (destroyR p s r)
-        put p s r
+        x <- restore (f (value r)) `catches` handlers p s r
+        put p s r id
         return x
 
 tryWith :: Pool -> (Connection -> IO a) -> IO (Maybe a)
@@ -110,8 +115,8 @@ tryWith p f = do
         r <- tryTake1 p s
         case r of
             Just  v -> do
-                x <- restore (f (value v)) `catches` handlers (put p s v) (destroyR p s v)
-                put p s v
+                x <- restore (f (value v)) `catches` handlers p s v
+                put p s v id
                 return (Just x)
             Nothing -> return Nothing
 
@@ -122,11 +127,16 @@ purge p = Vec.forM_ (stripes p) $ \s ->
 -----------------------------------------------------------------------------
 -- Internal
 
-handlers :: IO () -> IO () -> [Handler a]
-handlers putBack delete =
-    [ Handler $ \(x :: Timeout)       -> putBack >> throwIO x
-    , Handler $ \(x :: SomeException) -> delete  >> throwIO x
+handlers :: Pool -> Stripe -> Resource -> [Handler a]
+handlers p s r =
+    [ Handler $ \(x :: Timeout)       -> onTimeout      >> throwIO x
+    , Handler $ \(x :: SomeException) -> destroyR p s r >> throwIO x
     ]
+  where
+    onTimeout =
+        if timeouts r > maxTimeouts p
+            then destroyR p s r
+            else put p s r incrTimeouts
 
 take1 :: Pool -> Stripe -> IO Resource
 take1 p s = do
@@ -135,7 +145,7 @@ take1 p s = do
         u <- readTVar (inUse s)
         let n       = Seq.length c
         let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
-        if | u < maxconns p                -> mkNew p s u
+        if | u < maxConns p                -> mkNew p s u
            | n > 0 && refcnt r < maxRefs p -> use s r rr
            | otherwise                     -> retry
     case r of
@@ -151,7 +161,7 @@ tryTake1 p s = do
         u <- readTVar (inUse s)
         let n       = Seq.length c
         let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
-        if | u < maxconns p                -> fmap Just <$> mkNew p s u
+        if | u < maxConns p                -> fmap Just <$> mkNew p s u
            | n > 0 && refcnt r < maxRefs p -> fmap Just <$> use s r rr
            | otherwise                     -> return (return Nothing)
     case r of
@@ -171,19 +181,20 @@ mkNew :: Pool -> Stripe -> Int -> STM (IO (Either Resource Resource))
 mkNew p s u = do
     writeTVar (inUse s) $! u + 1
     return $ Left <$> onException
-        (Resource <$> Time.currentTime (tcache p) <*> pure 1 <*> createFn p)
+        (Resource <$> Time.currentTime (tcache p) <*> pure 1 <*> pure 0 <*> createFn p)
         (atomically (modifyTVar (inUse s) (subtract 1)))
 {-# INLINE mkNew #-}
 
-put :: Pool -> Stripe -> Resource -> IO ()
-put p s r = do
+put :: Pool -> Stripe -> Resource -> (Resource -> Resource) -> IO ()
+put p s r f = do
     now <- Time.currentTime (tcache p)
-    let update x = x { tstamp = now, refcnt = refcnt x - 1 }
+    let updated x = f x { tstamp = now, refcnt = refcnt x - 1 }
     atomically $ do
         rs <- readTVar (conns s)
-        case find ((value r ==) . value) rs of
-            Nothing -> writeTVar (conns s) $! rs |> update r
-            Just r' -> writeTVar (conns s) $! Seq.filter ((value r /=) . value) rs |> update r'
+        let (xs, rr) = Seq.breakl ((value r ==) . value) rs
+        case Seq.viewl rr of
+            EmptyL  -> writeTVar (conns s) $! xs         |> updated r
+            y :< ys -> writeTVar (conns s) $! (xs >< ys) |> updated y
 
 destroyR :: Pool -> Stripe -> Resource -> IO ()
 destroyR p s r = do
@@ -213,6 +224,10 @@ reaper p = forever $ do
             destroyFn p (value v)
 
 stripe :: Pool -> IO Stripe
-stripe p = (stripes p !) <$> ((`mod` hash (nStripes p)) . hash) <$> myThreadId
+stripe p = (stripes p !) <$> ((`mod` nStripes p) . hash) <$> myThreadId
 {-# INLINE stripe #-}
+
+incrTimeouts :: Resource -> Resource
+incrTimeouts r = r { timeouts = timeouts r + 1 }
+{-# INLINE incrTimeouts #-}
 

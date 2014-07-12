@@ -22,6 +22,7 @@ data Settings = Settings
     , sIdleTimeout     :: NominalDiffTime
     , sMaxConnections  :: Int
     , sMaxStreams      :: Int
+    , sMaxTimeouts     :: Int
     , sPoolStripes     :: Int
     , sMaxWaitQueue    :: Maybe Word64
     , sConnectTimeout  :: Milliseconds
@@ -32,7 +33,18 @@ data Settings = Settings
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042 Nothing 60 2 128 4 Nothing 5000 3000 10000 handler
+    Settings Cqlv300 noCompression "localhost" 9042
+             Nothing -- keyspace
+             60      -- idle timeout
+             2       -- max connections per stripe
+             128     -- max streams per connection
+             16      -- max timeouts per connection
+             4       -- max stripes
+             Nothing -- max wait queue
+             5000    -- connect timeout
+             3000    -- send timeout
+             10000   -- response timeout
+             handler -- event handler
 
 setVersion :: CqlVersion -> Settings -> Settings
 setVersion v s = s { sVersion = v }
@@ -78,6 +90,9 @@ setSendTimeout v s = s { sSendTimeout = Ms $ round (1000 * v) }
 
 setResponseTimeout :: NominalDiffTime -> Settings -> Settings
 setResponseTimeout v s = s { sResponseTimeout = Ms $ round (1000 * v) }
+
+setMaxTimeouts :: Int -> Settings -> Settings
+setMaxTimeouts v s = s { sMaxTimeouts = v }
 
 setOnEventHandler :: EventHandler -> Settings -> Settings
 setOnEventHandler v s = s { sOnEvent = v }
