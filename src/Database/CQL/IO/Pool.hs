@@ -135,7 +135,9 @@ handlers p s r =
   where
     onTimeout =
         if timeouts r > maxTimeouts p
-            then destroyR p s r
+            then do
+                info (logger p) $ msg (show (value r) +++ val " has too many timeouts.")
+                destroyR p s r
             else put p s r incrTimeouts
 
 take1 :: Pool -> Stripe -> IO Resource
