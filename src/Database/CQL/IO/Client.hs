@@ -30,7 +30,7 @@ import Database.CQL.IO.Protocol
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Timeouts (TimeoutManager)
 import Database.CQL.IO.Types
-import System.Logger.Class (MonadLogger (..), Logger, (.=))
+import System.Logger.Class hiding (Settings, settings)
 
 import qualified Data.Text.Lazy             as LT
 import qualified Database.CQL.IO.Pool       as P
@@ -86,8 +86,8 @@ mkPool g s = liftIO $ do
         return addr
 
     connOpen t a = do
-        Logger.debug g $ "client.connect" .= sHost s
         c <- C.connect s g a (sCompression s) (sOnEvent s)
+        Logger.debug g $ "client.connect" .= sHost s ~~ msg (show c)
         connInit t c
 
     connInit t c = flip onException (C.close c) $ do
@@ -97,7 +97,7 @@ mkPool g s = liftIO $ do
         return c
 
     connClose c = do
-        Logger.debug g $ "client.close" .= sHost s
+        Logger.debug g $ "client.close" .= sHost s ~~ msg (show c)
         C.close c
 
     startup t con = do
