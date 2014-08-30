@@ -14,19 +14,15 @@ module Database.CQL.IO.Timeouts
     ) where
 
 import Control.Applicative
-import Control.Concurrent
-import Control.Concurrent.Async (Async, async)
 import Control.Exception (mask_, bracket)
+import Control.Reaper
 import Control.Monad
 import Data.IORef
 import Database.CQL.IO.Types (Milliseconds (..), ignore)
 
-import qualified Control.Concurrent.Async as Async
-
 data TimeoutManager = TimeoutManager
-    { elements  :: IORef [Action]
-    , loop      :: Async ()
-    , roundtrip :: !Int
+    { roundtrip :: !Int
+    , reaper    :: Reaper [Action] Action
     }
 
 data Action = Action
@@ -34,46 +30,36 @@ data Action = Action
     , state  :: IORef State
     }
 
-data State = Wait !Int | Canceled
+data State = Running !Int | Canceled
 
 create :: Milliseconds -> IO TimeoutManager
-create (Ms n) = do
-    r <- newIORef []
-    l <- async $ forever $ do
-            threadDelay (n * 1000)
-            mask_ $ do
-                prev <- atomicModifyIORef' r $ \x -> ([], x)
-                next <- prune prev id
-                atomicModifyIORef' r $ \x -> (next x, ())
-    return $ TimeoutManager r l n
+create (Ms n) = TimeoutManager n <$> mkReaper defaultReaperSettings
+    { reaperAction = mkListAction prune
+    , reaperDelay  = n * 1000
+    }
   where
-    prune []     front = return front
-    prune (a:aa) front = do
+    prune a = do
         s <- atomicModifyIORef' (state a) $ \x -> (newState x, x)
         case s of
-            Wait 0 -> do
+            Running 0 -> do
                 ignore (action a)
-                prune aa front
-            Canceled -> prune aa front
-            _        -> prune aa (front . (a:))
+                return Nothing
+            Canceled -> return Nothing
+            _        -> return $ Just a
 
-    newState (Wait k) = Wait (k - 1)
-    newState s        = s
+    newState (Running k) = Running (k - 1)
+    newState s           = s
 
 destroy :: TimeoutManager -> Bool -> IO ()
-destroy tm exec = do
-    Async.cancel (loop tm)
+destroy tm exec = mask_ $ do
+    a <- reaperStop (reaper tm)
     when exec $
-        readIORef (elements tm) >>= mapM_ f
-  where
-    f e = readIORef (state e) >>= \s -> case s of
-        Wait  _ -> ignore (action e)
-        _       -> return ()
+        mapM_ (ignore . action) a
 
 add :: TimeoutManager -> Milliseconds -> IO () -> IO Action
 add tm (Ms n) a = do
-    r <- Action a <$> newIORef (Wait $ n `div` roundtrip tm)
-    atomicModifyIORef' (elements tm) $ \rr -> (r:rr, ())
+    r <- Action a <$> newIORef (Running $ n `div` roundtrip tm)
+    reaperAdd (reaper tm) r
     return r
 
 cancel :: Action -> IO ()
