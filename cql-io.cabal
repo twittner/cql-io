@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.8.2
+version:              0.8.3
 synopsis:             CQL client
 stability:            experimental
 license:              OtherLicense
@@ -36,13 +36,13 @@ library
         Database.CQL.IO.Settings
         Database.CQL.IO.Sync
         Database.CQL.IO.Tickets
-        Database.CQL.IO.Time
         Database.CQL.IO.Timeouts
         Database.CQL.IO.Types
         Database.CQL.IO.Hexdump
 
     build-depends:
           async        == 2.0.*
+        , auto-update  == 0.1.*
         , base         >= 4.7     && < 4.8
         , bytestring   == 0.10.*
         , containers   == 0.5.*

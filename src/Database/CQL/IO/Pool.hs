@@ -20,6 +20,7 @@ module Database.CQL.IO.Pool
     ) where
 
 import Control.Applicative
+import Control.AutoUpdate
 import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Concurrent.STM
@@ -31,16 +32,14 @@ import Data.Hashable
 import Data.IORef
 import Prelude hiding (mapM_)
 import Data.Sequence (Seq, ViewL (..), (|>), (><))
-import Data.Time.Clock (UTCTime, NominalDiffTime, diffUTCTime)
+import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 import Data.Vector (Vector, (!))
 import Database.CQL.IO.Connection (Connection)
-import Database.CQL.IO.Time (TimeCache)
 import Database.CQL.IO.Types (Timeout, ignore)
 import System.Logger hiding (create)
 
-import qualified Data.Sequence        as Seq
-import qualified Data.Vector          as Vec
-import qualified Database.CQL.IO.Time as Time
+import qualified Data.Sequence as Seq
+import qualified Data.Vector   as Vec
 
 -----------------------------------------------------------------------------
 -- API
@@ -61,7 +60,7 @@ data Pool = Pool
     , maxTimeouts :: Int
     , nStripes    :: Int
     , idleTime    :: NominalDiffTime
-    , tcache      :: TimeCache
+    , currentTime :: IO UTCTime
     , stripes     :: Vector Stripe
     , finaliser   :: IORef ()
     }
@@ -87,7 +86,7 @@ create :: IO Connection
        -> IO Pool
 create mk del g (MaxRes n) (MaxRef k) (MaxTout a) (Stripes s) t = do
     p <- Pool mk del g n k a s t
-            <$> Time.create
+            <$> mkAutoUpdate defaultUpdateSettings { updateAction = getCurrentTime }
             <*> Vec.replicateM s (Stripe <$> newTVarIO Seq.empty <*> newTVarIO 0)
             <*> newIORef ()
     r <- async $ reaper p
@@ -95,9 +94,7 @@ create mk del g (MaxRes n) (MaxRef k) (MaxTout a) (Stripes s) t = do
     return p
 
 destroy :: Pool -> IO ()
-destroy p = do
-    Time.close (tcache p)
-    purge p
+destroy = purge
 
 with :: Pool -> (Connection -> IO a) -> IO a
 with p f = do
@@ -183,13 +180,13 @@ mkNew :: Pool -> Stripe -> Int -> STM (IO (Either Resource Resource))
 mkNew p s u = do
     writeTVar (inUse s) $! u + 1
     return $ Left <$> onException
-        (Resource <$> Time.currentTime (tcache p) <*> pure 1 <*> pure 0 <*> createFn p)
+        (Resource <$> currentTime p <*> pure 1 <*> pure 0 <*> createFn p)
         (atomically (modifyTVar (inUse s) (subtract 1)))
 {-# INLINE mkNew #-}
 
 put :: Pool -> Stripe -> Resource -> (Resource -> Resource) -> IO ()
 put p s r f = do
-    now <- Time.currentTime (tcache p)
+    now <- currentTime p
     let updated x = f x { tstamp = now, refcnt = refcnt x - 1 }
     atomically $ do
         rs <- readTVar (conns s)
@@ -212,7 +209,7 @@ destroyR p s r = do
 reaper :: Pool -> IO ()
 reaper p = forever $ do
     threadDelay 1000000
-    now <- Time.currentTime (tcache p)
+    now <- currentTime p
     let isStale r = refcnt r == 0 && now `diffUTCTime` tstamp r > idleTime p
     Vec.forM_ (stripes p) $ \s -> do
         x <- atomically $ do
