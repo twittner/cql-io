@@ -84,11 +84,12 @@ query q p = do
 write :: (Tuple a) => QueryString W a () -> QueryParams a -> Client ()
 write q p = void $ query' q p
 
-schema :: (Tuple a) => QueryString S a () -> QueryParams a -> Client SchemaChange
+schema :: (Tuple a) => QueryString S a () -> QueryParams a -> Client (Maybe SchemaChange)
 schema x y = do
     r <- query' x y
     case r of
-        RsResult _ (SchemaChangeResult s) -> return s
+        RsResult _ (SchemaChangeResult s) -> return $ Just s
+        RsResult _ VoidResult             -> return Nothing
         _                                 -> throwM UnexpectedResponse
 
 ------------------------------------------------------------------------------
@@ -131,11 +132,12 @@ execute q p = do
 executeWrite :: (Tuple a) => QueryId W a () -> QueryParams a -> Client ()
 executeWrite q p = void $ execute' q p
 
-executeSchema :: (Tuple a) => QueryId S a () -> QueryParams a -> Client SchemaChange
+executeSchema :: (Tuple a) => QueryId S a () -> QueryParams a -> Client (Maybe SchemaChange)
 executeSchema q p = do
     r <- execute' q p
     case r of
-        RsResult _ (SchemaChangeResult s) -> return s
+        RsResult _ (SchemaChangeResult s) -> return $ Just s
+        RsResult _ VoidResult             -> return Nothing
         _                                 -> throwM UnexpectedResponse
 
 batch :: Consistency -> BatchType -> [BatchQuery] -> Client ()
