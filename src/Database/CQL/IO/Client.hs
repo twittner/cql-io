@@ -77,6 +77,8 @@ mkPool g s = liftIO $ do
            <*> newIORef 0
            <*> pure t
   where
+    encode = serialise (sProtoVersion s)
+
     validateSettings t = do
         addr <- C.resolve (sHost s) (sPort s)
         Supported ca _ <- supportedOptions t addr
@@ -103,7 +105,7 @@ mkPool g s = liftIO $ do
     startup t con = do
         let cmp = sCompression s
             req = RqStartup (Startup (sVersion s) (algorithm cmp))
-        res <- C.request s t con (serialise cmp (req :: Request () () ()))
+        res <- C.request s t con (encode cmp (req :: Request () () ()))
         case parse (sCompression s) res :: Response () () () of
             RsEvent _ e -> sOnEvent s e
             _           -> return ()
@@ -113,7 +115,7 @@ mkPool g s = liftIO $ do
             params = QueryParams One False () Nothing Nothing Nothing
             kspace = quoted (LT.fromStrict $ unKeyspace ks)
             req    = RqQuery (Query (QueryString $ "use " <> kspace) params)
-        res <- C.request s t con (serialise cmp req)
+        res <- C.request s t con (encode cmp req)
         case parse (sCompression s) res :: Response () () () of
             RsResult _ (SetKeyspaceResult _) -> return ()
             other                            -> throwM (UnexpectedResponse' other)
@@ -122,7 +124,7 @@ mkPool g s = liftIO $ do
         let acquire = C.connect s g a (sCompression s) (sOnEvent s)
             options = RqOptions Options :: Request () () ()
         bracket acquire C.close $ \c -> do
-            res <- C.request s t c (serialise noCompression options)
+            res <- C.request s t c (encode noCompression options)
             case parse (sCompression s) res :: Response () () () of
                 RsSupported _ x -> return x
                 other           -> throwM (UnexpectedResponse' other)
@@ -156,8 +158,10 @@ request a = do
             throwM ConnectionsBusy
         P.with c (go s t f)
 
-    transaction s t h =
-        parse (sCompression s) <$> C.request s t h (serialise (sCompression s) a)
+    transaction s t h = do
+        let c = sCompression s
+        let v = sProtoVersion s
+        parse c <$> C.request s t h (serialise v c a)
 
 command :: Request k () () -> Client ()
 command r = void (request r)

@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.8.3
+version:              0.9
 synopsis:             CQL client
 stability:            experimental
 license:              OtherLicense
@@ -43,17 +43,17 @@ library
     build-depends:
           async        == 2.0.*
         , auto-update  == 0.1.*
-        , base         >= 4.7     && < 4.8
-        , bytestring   == 0.10.*
-        , containers   == 0.5.*
-        , cql          >= 2.0.0.3 && < 2.1
-        , exceptions   >= 0.4     && < 0.7
-        , hashable     == 1.2.*
+        , base         >= 4.7     && < 5.0
+        , bytestring   >= 0.10    && < 1.0
+        , containers   >= 0.5     && < 1.0
+        , cql          == 3.0.*
+        , exceptions   >= 0.4     && < 1.0
+        , hashable     >= 1.2     && < 2.0
         , mtl          >= 2.1     && < 2.3
-        , network      >= 2.4     && < 2.6
-        , stm          == 2.4.*
-        , text         >= 0.11    && < 1.2
+        , network      >= 2.4     && < 3.0
+        , stm          >= 2.4     && < 3.0
+        , text         >= 0.11    && < 2.0
         , tinylog      >= 0.8     && < 0.11
-        , time         == 1.4.*
+        , time         >= 1.4     && < 2.0
         , transformers >= 0.3     && < 0.5
-        , vector       == 0.10.*
+        , vector       >= 0.10    && < 1.0

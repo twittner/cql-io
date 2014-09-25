@@ -88,24 +88,24 @@ connect t g a c f =
         tck <- Tickets.pool (sMaxStreams t)
         syn <- Vector.replicateM (sMaxStreams t) Sync.create
         lck <- newMVar ()
-        rdr <- async (runReader g c f tck s syn)
+        rdr <- async (runReader (sProtoVersion t) g c f tck s syn)
         Connection s syn lck rdr tck g <$> newUnique
 
-runReader :: Logger -> Compression -> EventHandler -> Pool -> Socket -> Streams -> IO ()
-runReader g cmp fn tck sck syn = run `finally` cleanup
+runReader :: Version -> Logger -> Compression -> EventHandler -> Pool -> Socket -> Streams -> IO ()
+runReader v g cmp fn tck sck syn = run `finally` cleanup
   where
     run = forever $ do
-        x <- readSocket g sck
-        case streamId (fst x) of
-            StreamId (-1) ->
+        x <- readSocket v g sck
+        case fromStreamId $ streamId (fst x) of
+            -1 ->
                 case parse cmp x :: Response () () () of
                     RsError _ e -> throwIO e
                     RsEvent _ e -> fn e
                     r           -> throwIO (UnexpectedResponse' r)
-            StreamId sid -> do
-                ok <- Sync.put (syn ! fromIntegral sid) x
+            sid -> do
+                ok <- Sync.put (syn ! sid) x
                 unless ok $
-                    markAvailable tck (fromIntegral sid)
+                    markAvailable tck sid
 
     cleanup = do
         Tickets.close tck
@@ -137,10 +137,10 @@ request s t c f = send >>= receive
             markAvailable (tickets c) i
             return x
 
-readSocket :: Logger -> Socket -> IO (Header, ByteString)
-readSocket g s = do
+readSocket :: Version -> Logger -> Socket -> IO (Header, ByteString)
+readSocket v g s = do
     b <- recv 8 s
-    h <- case header b of
+    h <- case header v b of
             Left  e -> throwIO $ InternalError ("response header reading: " ++ e)
             Right h -> return h
     case headerType h of
@@ -149,7 +149,7 @@ readSocket g s = do
             let len = lengthRepr (bodyLength h)
             x <- recv (fromIntegral len) s
             trace g $ "socket" .= fd s
-                ~~ "stream" .= streamRepr (streamId h)
+                ~~ "stream" .= fromStreamId (streamId h)
                 ~~ "type"   .= val "response"
                 ~~ msg' (hexdump $ L.take 160 (b <> x))
             return (h, x)

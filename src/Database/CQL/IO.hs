@@ -5,7 +5,8 @@
 module Database.CQL.IO
     ( Settings
     , defSettings
-    , setVersion
+    , setCqlVersion
+    , setProtoVersion
     , setCompression
     , setHost
     , setPort
@@ -140,8 +141,8 @@ executeSchema q p = do
         RsResult _ VoidResult             -> return Nothing
         _                                 -> throwM UnexpectedResponse
 
-batch :: Consistency -> BatchType -> [BatchQuery] -> Client ()
-batch c t q = command (RqBatch (Batch t q c))
+batch :: Batch -> Client ()
+batch b = command (RqBatch b)
 
 ------------------------------------------------------------------------------
 -- register

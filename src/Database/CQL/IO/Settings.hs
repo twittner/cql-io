@@ -15,6 +15,7 @@ type EventHandler = Event -> IO ()
 
 data Settings = Settings
     { sVersion         :: CqlVersion
+    , sProtoVersion    :: Version
     , sCompression     :: Compression
     , sHost            :: String
     , sPort            :: Word16
@@ -33,7 +34,7 @@ data Settings = Settings
 
 defSettings :: Settings
 defSettings = let handler = const $ return () in
-    Settings Cqlv300 noCompression "localhost" 9042
+    Settings Cqlv300 V3 noCompression "localhost" 9042
              Nothing -- keyspace
              60      -- idle timeout
              2       -- max connections per stripe
@@ -46,8 +47,11 @@ defSettings = let handler = const $ return () in
              10000   -- response timeout
              handler -- event handler
 
-setVersion :: CqlVersion -> Settings -> Settings
-setVersion v s = s { sVersion = v }
+setCqlVersion :: CqlVersion -> Settings -> Settings
+setCqlVersion v s = s { sVersion = v }
+
+setProtoVersion :: Version -> Settings -> Settings
+setProtoVersion v s = s { sProtoVersion = v }
 
 setCompression :: Compression -> Settings -> Settings
 setCompression v s = s { sCompression = v }
