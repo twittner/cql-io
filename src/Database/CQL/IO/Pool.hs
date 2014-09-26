@@ -5,18 +5,22 @@
 {-# LANGUAGE MultiWayIf          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell     #-}
 
 module Database.CQL.IO.Pool
     ( Pool
-    , MaxRes      (..)
-    , MaxRef      (..)
-    , MaxTimeouts (..)
-    , Stripes     (..)
     , create
     , destroy
     , purge
     , with
     , tryWith
+
+    , PoolSettings (..)
+    , defSettings
+    , idleTimeout
+    , maxConnections
+    , maxTimeouts
+    , poolStripes
     ) where
 
 import Control.Applicative
@@ -25,6 +29,7 @@ import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
+import Control.Lens ((^.), makeLenses, view)
 import Control.Monad hiding (forM_, mapM_)
 import Data.Foldable (forM_, mapM_, find)
 import Data.Function (on)
@@ -36,13 +41,31 @@ import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 import Data.Vector (Vector, (!))
 import Database.CQL.IO.Connection (Connection)
 import Database.CQL.IO.Types (Timeout, ignore)
-import System.Logger hiding (create)
+import System.Logger hiding (create, defSettings, settings)
 
 import qualified Data.Sequence as Seq
 import qualified Data.Vector   as Vec
 
 -----------------------------------------------------------------------------
 -- API
+
+data PoolSettings = PoolSettings
+    { _idleTimeout    :: !NominalDiffTime
+    , _maxConnections :: !Int
+    , _maxTimeouts    :: !Int
+    , _poolStripes    :: !Int
+    }
+
+data Pool = Pool
+    { _createFn    :: IO Connection
+    , _destroyFn   :: Connection -> IO ()
+    , _logger      :: !Logger
+    , _settings    :: !PoolSettings
+    , _maxRefs     :: !Int
+    , _currentTime :: IO UTCTime
+    , _stripes     :: Vector Stripe
+    , _finaliser   :: IORef ()
+    }
 
 data Resource = Resource
     { tstamp   :: !UTCTime
@@ -51,46 +74,29 @@ data Resource = Resource
     , value    :: !Connection
     } deriving Show
 
-data Pool = Pool
-    { createFn    :: IO Connection
-    , destroyFn   :: Connection -> IO ()
-    , logger      :: Logger
-    , maxConns    :: Int
-    , maxRefs     :: Int
-    , maxTimeouts :: Int
-    , nStripes    :: Int
-    , idleTime    :: NominalDiffTime
-    , currentTime :: IO UTCTime
-    , stripes     :: Vector Stripe
-    , finaliser   :: IORef ()
-    }
-
 data Stripe = Stripe
     { conns :: TVar (Seq Resource)
     , inUse :: TVar Int
     }
 
-newtype MaxRes      = MaxRes Int
-newtype MaxRef      = MaxRef Int
-newtype MaxTimeouts = MaxTout Int
-newtype Stripes     = Stripes Int
+makeLenses ''PoolSettings
+makeLenses ''Pool
 
-create :: IO Connection
-       -> (Connection -> IO ())
-       -> Logger
-       -> MaxRes
-       -> MaxRef
-       -> MaxTimeouts
-       -> Stripes
-       -> NominalDiffTime
-       -> IO Pool
-create mk del g (MaxRes n) (MaxRef k) (MaxTout a) (Stripes s) t = do
-    p <- Pool mk del g n k a s t
+defSettings :: PoolSettings
+defSettings = PoolSettings
+    60 -- idle timeout
+    2  -- max connections per stripe
+    16 -- max timeouts per connection
+    4  -- max stripes
+
+create :: IO Connection -> (Connection -> IO ()) -> Logger -> PoolSettings -> Int -> IO Pool
+create mk del g s k = do
+    p <- Pool mk del g s k
             <$> mkAutoUpdate defaultUpdateSettings { updateAction = getCurrentTime }
-            <*> Vec.replicateM s (Stripe <$> newTVarIO Seq.empty <*> newTVarIO 0)
+            <*> Vec.replicateM (s^.poolStripes) (Stripe <$> newTVarIO Seq.empty <*> newTVarIO 0)
             <*> newIORef ()
     r <- async $ reaper p
-    void $ mkWeakIORef (finaliser p) (cancel r >> destroy p)
+    void $ mkWeakIORef (p^.finaliser) (cancel r >> destroy p)
     return p
 
 destroy :: Pool -> IO ()
@@ -118,8 +124,8 @@ tryWith p f = do
             Nothing -> return Nothing
 
 purge :: Pool -> IO ()
-purge p = Vec.forM_ (stripes p) $ \s ->
-    atomically (swapTVar (conns s) Seq.empty) >>= mapM_ (ignore . destroyFn p . value)
+purge p = Vec.forM_ (p^.stripes) $ \s ->
+    atomically (swapTVar (conns s) Seq.empty) >>= mapM_ (ignore . view destroyFn p . value)
 
 -----------------------------------------------------------------------------
 -- Internal
@@ -131,9 +137,9 @@ handlers p s r =
     ]
   where
     onTimeout =
-        if timeouts r > maxTimeouts p
+        if timeouts r > p^.settings.maxTimeouts
             then do
-                info (logger p) $ msg (show (value r) +++ val " has too many timeouts.")
+                info (p^.logger) $ msg (show (value r) +++ val " has too many timeouts.")
                 destroyR p s r
             else put p s r incrTimeouts
 
@@ -144,9 +150,9 @@ take1 p s = do
         u <- readTVar (inUse s)
         let n       = Seq.length c
         let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
-        if | u < maxConns p                -> mkNew p s u
-           | n > 0 && refcnt r < maxRefs p -> use s r rr
-           | otherwise                     -> retry
+        if | u < p^.settings.maxConnections -> mkNew p s u
+           | n > 0 && refcnt r < p^.maxRefs -> use s r rr
+           | otherwise                      -> retry
     case r of
         Left  x -> do
             atomically (modifyTVar (conns s) (|> x))
@@ -160,9 +166,9 @@ tryTake1 p s = do
         u <- readTVar (inUse s)
         let n       = Seq.length c
         let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
-        if | u < maxConns p                -> fmap Just <$> mkNew p s u
-           | n > 0 && refcnt r < maxRefs p -> fmap Just <$> use s r rr
-           | otherwise                     -> return (return Nothing)
+        if | u < p^.settings.maxConnections -> fmap Just <$> mkNew p s u
+           | n > 0 && refcnt r < p^.maxRefs -> fmap Just <$> use s r rr
+           | otherwise                      -> return (return Nothing)
     case r of
         Just (Left  x) -> do
             atomically (modifyTVar (conns s) (|> x))
@@ -180,13 +186,13 @@ mkNew :: Pool -> Stripe -> Int -> STM (IO (Either Resource Resource))
 mkNew p s u = do
     writeTVar (inUse s) $! u + 1
     return $ Left <$> onException
-        (Resource <$> currentTime p <*> pure 1 <*> pure 0 <*> createFn p)
+        (Resource <$> p^.currentTime <*> pure 1 <*> pure 0 <*> p^.createFn)
         (atomically (modifyTVar (inUse s) (subtract 1)))
 {-# INLINE mkNew #-}
 
 put :: Pool -> Stripe -> Resource -> (Resource -> Resource) -> IO ()
 put p s r f = do
-    now <- currentTime p
+    now <- p^.currentTime
     let updated x = f x { tstamp = now, refcnt = refcnt x - 1 }
     atomically $ do
         rs <- readTVar (conns s)
@@ -204,14 +210,14 @@ destroyR p s r = do
             Just  _ -> do
                 modifyTVar (inUse s) (subtract 1)
                 writeTVar (conns s) $! Seq.filter ((value r /=) . value) rs
-    ignore $ destroyFn p (value r)
+    ignore $ p^.destroyFn $ value r
 
 reaper :: Pool -> IO ()
 reaper p = forever $ do
     threadDelay 1000000
-    now <- currentTime p
-    let isStale r = refcnt r == 0 && now `diffUTCTime` tstamp r > idleTime p
-    Vec.forM_ (stripes p) $ \s -> do
+    now <- p^.currentTime
+    let isStale r = refcnt r == 0 && now `diffUTCTime` tstamp r > p^.settings.idleTimeout
+    Vec.forM_ (p^.stripes) $ \s -> do
         x <- atomically $ do
                 (stale, okay) <- Seq.partition isStale <$> readTVar (conns s)
                 unless (Seq.null stale) $ do
@@ -219,11 +225,11 @@ reaper p = forever $ do
                     modifyTVar (inUse s) (subtract (Seq.length stale))
                 return stale
         forM_ x $ \v -> ignore $ do
-            trace (logger p) $ "reap" .= show (value v)
-            destroyFn p (value v)
+            trace (p^.logger) $ "reap" .= show (value v)
+            p^.destroyFn $ (value v)
 
 stripe :: Pool -> IO Stripe
-stripe p = (stripes p !) <$> ((`mod` nStripes p) . hash) <$> myThreadId
+stripe p = ((p^.stripes) !) <$> ((`mod` (p^.settings.poolStripes)) . hash) <$> myThreadId
 {-# INLINE stripe #-}
 
 incrTimeouts :: Resource -> Resource

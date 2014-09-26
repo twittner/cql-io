@@ -4,50 +4,60 @@
 
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE TemplateHaskell            #-}
 
 module Database.CQL.IO.Client
-    ( Pool
+    ( Cluster
     , Client
-    , mkPool
+    , mkCluster
+    , initialise
     , shutdown
     , runClient
     , request
     , command
-    , uncompressed
-    , compression
     ) where
 
 import Control.Applicative
+import Control.Lens ((^.), view, makeLenses)
 import Control.Monad.IO.Class
 import Control.Monad.Catch
 import Control.Monad.Reader
-import Data.Foldable (for_)
 import Data.IORef
-import Data.Monoid ((<>))
+import Data.Map.Strict (Map)
 import Data.Word
-import Database.CQL.Protocol
+import Database.CQL.Protocol hiding (Map)
+import Database.CQL.IO.Cluster
+import Database.CQL.IO.Cluster.Discovery
+import Database.CQL.IO.Cluster.Host
+import Database.CQL.IO.Cluster.Policies
+import Database.CQL.IO.Connection hiding (request)
+import Database.CQL.IO.Pool
 import Database.CQL.IO.Protocol
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Timeouts (TimeoutManager)
 import Database.CQL.IO.Types
-import System.Logger.Class hiding (Settings, settings)
+import Network.Socket (SockAddr)
+import System.Logger.Class hiding (create, Settings, settings)
 
-import qualified Data.Text.Lazy             as LT
-import qualified Database.CQL.IO.Pool       as P
+import qualified Data.Map.Strict            as Map
 import qualified Database.CQL.IO.Connection as C
 import qualified Database.CQL.IO.Timeouts   as TM
 import qualified System.Logger              as Logger
 
-data Pool = Pool
-    { settings :: Settings
-    , connPool :: P.Pool
-    , logger   :: Logger.Logger
-    , failures :: IORef Word64
-    , timeouts :: TimeoutManager
+data Cluster = Cluster
+    { _settings :: Settings
+    , _logger   :: Logger
+    , _failures :: IORef Word64
+    , _timeouts :: TimeoutManager
+    , _control  :: IORef Connection
+    , _hosts    :: IORef (Map SockAddr Host)
+    , _lbPolicy :: Policy
     }
 
+makeLenses ''Cluster
+
 newtype Client a = Client
-    { client :: ReaderT Pool IO a
+    { client :: ReaderT Cluster IO a
     } deriving ( Functor
                , Applicative
                , Monad
@@ -55,122 +65,108 @@ newtype Client a = Client
                , MonadThrow
                , MonadMask
                , MonadCatch
-               , MonadReader Pool
+               , MonadReader Cluster
                )
 
 instance MonadLogger Client where
-    log l m = asks logger >>= \g -> Logger.log g l m
+    log l m = view logger >>= \g -> Logger.log g l m
 
-mkPool :: MonadIO m => Logger -> Settings -> m Pool
-mkPool g s = liftIO $ do
+mkCluster :: MonadIO m => Logger -> Settings -> m Cluster
+mkCluster g s = liftIO $ do
     t <- TM.create 250
     a <- validateSettings t
-    Pool s <$> P.create (connOpen t a)
-                        connClose
-                        g
-                        (P.MaxRes  $ sMaxConnections s)
-                        (P.MaxRef  $ sMaxStreams s)
-                        (P.MaxTout $ sMaxTimeouts s)
-                        (P.Stripes $ sPoolStripes s)
-                        (sIdleTimeout s)
-           <*> pure g
-           <*> newIORef 0
-           <*> pure t
+    h <- newIORef Map.empty
+    p <- s^.policy $ []
+    c <- C.connect (s^.connSettings) t (s^.protoVersion) g a (eventHandler s g t p)
+    Cluster s g <$> newIORef 0
+                <*> pure t
+                <*> newIORef c
+                <*> pure h
+                <*> pure p
   where
-    encode = serialise (sProtoVersion s)
-
     validateSettings t = do
-        addr <- C.resolve (sHost s) (sPort s)
+        addr <- C.resolve (s^.bootstrapHost) (s^.bootstrapPort)
         Supported ca _ <- supportedOptions t addr
-        let c = algorithm (sCompression s)
+        let c = algorithm (s^.connSettings.compression)
         unless (c == None || c `elem` ca) $
             throwM $ UnsupportedCompression ca
         return addr
 
-    connOpen t a = do
-        c <- C.connect s g a (sCompression s) (sOnEvent s)
-        Logger.debug g $ "client.connect" .= sHost s ~~ msg (show c)
-        connInit t c
-
-    connInit t c = flip onException (C.close c) $ do
-        startup t c
-        for_ (sKeyspace s) $
-            useKeyspace t c
-        return c
-
-    connClose c = do
-        Logger.debug g $ "client.close" .= sHost s ~~ msg (show c)
-        C.close c
-
-    startup t con = do
-        let cmp = sCompression s
-            req = RqStartup (Startup (sVersion s) (algorithm cmp))
-        res <- C.request s t con (encode cmp (req :: Request () () ()))
-        case parse (sCompression s) res :: Response () () () of
-            RsEvent _ e -> sOnEvent s e
-            _           -> return ()
-
-    useKeyspace t con ks = do
-        let cmp    = sCompression s
-            params = QueryParams One False () Nothing Nothing Nothing
-            kspace = quoted (LT.fromStrict $ unKeyspace ks)
-            req    = RqQuery (Query (QueryString $ "use " <> kspace) params)
-        res <- C.request s t con (encode cmp req)
-        case parse (sCompression s) res :: Response () () () of
-            RsResult _ (SetKeyspaceResult _) -> return ()
-            other                            -> throwM (UnexpectedResponse' other)
-
     supportedOptions t a = do
-        let acquire = C.connect s g a (sCompression s) (sOnEvent s)
+        let sett    = s^.connSettings
+            acquire = C.connect sett t (s^.protoVersion) g a (const $ return ())
             options = RqOptions Options :: Request () () ()
         bracket acquire C.close $ \c -> do
-            res <- C.request s t c (encode noCompression options)
-            case parse (sCompression s) res :: Response () () () of
+            res <- C.request c (serialise (s^.protoVersion) noCompression options)
+            case parse (sett^.compression) res :: Response () () () of
                 RsSupported _ x -> return x
                 other           -> throwM (UnexpectedResponse' other)
 
-shutdown :: MonadIO m => Pool -> m ()
-shutdown p = liftIO $ do
-    P.destroy (connPool p)
-    TM.destroy (timeouts p) True
+initialise :: Client ()
+initialise = do
+    c <- controlConn
+    liftIO $ startup c
+    liftIO $ register c allEventTypes
+    p <- view lbPolicy
+    h <- discoverPeers
+    liftIO $ mapM_ (addHost p) h
+  where
+    allEventTypes = [TopologyChangeEvent, StatusChangeEvent, SchemaChangeEvent]
 
-runClient :: MonadIO m => Pool -> Client a -> m a
-runClient p a = liftIO $ runReaderT (client a) p
+shutdown :: MonadIO m => Cluster -> m ()
+shutdown c = liftIO $ do
+    con <- readIORef (c^.control)
+    hst <- readIORef (c^.hosts)
+    C.close con
+    TM.destroy (c^.timeouts) True
+    mapM_ (destroy . view pool) (Map.elems hst)
+
+runClient :: MonadIO m => Cluster -> Client a -> m a
+runClient c a = liftIO $ runReaderT (client a) c
+
+discoverPeers :: Client [Host]
+discoverPeers = do
+    s <- view settings
+    g <- view logger
+    t <- view timeouts
+    c <- controlConn
+    liftIO $ do
+        r <- query c One peers ()
+        mapM (mkHost s g t (s^.bootstrapPort)) (map asRecord r)
+
+pickHost :: Client Host
+pickHost = do
+    p <- view lbPolicy
+    h <- liftIO $ getHost p
+    maybe (throwM NoHostAvailable) return h
 
 request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
 request a = do
-    p <- ask
-    let c = connPool p
-        s = settings p
-        t = timeouts p
-        f = failures p
-    liftIO $ case sMaxWaitQueue s of
-        Nothing -> P.with c (transaction s t)
-        Just  q -> P.tryWith c (go s t f) >>= maybe (retry q c s t f) return
+    h <- pickHost
+    s <- view settings
+    f <- view failures
+    let p = h^.pool
+    liftIO $ case s^.maxWaitQueue of
+        Nothing -> with p (transaction s)
+        Just  q -> tryWith p (go s f) >>= maybe (retry q p s f) return
   where
-    go s t f h = do
+    go s f h = do
         atomicModifyIORef' f $ \n -> (if n > 0 then n - 1 else 0, ())
-        transaction s t h
+        transaction s h
 
-    retry q c s t f = do
+    retry q p s f = do
         k <- atomicModifyIORef' f $ \n -> (n + 1, n)
         unless (k < q) $
             throwM ConnectionsBusy
-        P.with c (go s t f)
+        with p (go s f)
 
-    transaction s t h = do
-        let c = sCompression s
-        let v = sProtoVersion s
-        parse c <$> C.request s t h (serialise v c a)
+    transaction s c = do
+        let x = s^.connSettings.compression
+        let v = s^.protoVersion
+        parse x <$> C.request c (serialise v x a)
 
 command :: Request k () () -> Client ()
 command r = void (request r)
 
-uncompressed :: Client a -> Client a
-uncompressed m = do
-    s <- asks settings
-    local (\e -> e { settings = s { sCompression = noCompression } }) m
-
-compression :: Client Compression
-compression = asks (sCompression . settings)
-
+controlConn :: Client Connection
+controlConn = view control >>= liftIO . readIORef

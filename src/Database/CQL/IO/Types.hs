@@ -11,7 +11,9 @@ module Database.CQL.IO.Types where
 
 import Control.Exception (Exception, SomeException, catch)
 import Data.Typeable
-import Database.CQL.Protocol (Response, CompressionAlgorithm)
+import Database.CQL.Protocol (Event, Response, CompressionAlgorithm)
+
+type EventHandler = Event -> IO ()
 
 newtype Milliseconds = Ms { ms :: Int } deriving (Eq, Show, Num)
 
@@ -40,6 +42,18 @@ instance Exception InternalError
 
 instance Show InternalError where
     show (InternalError e) = "Database.CQL.IO.InternalError: " ++ show e
+
+-----------------------------------------------------------------------------
+-- HostError
+
+data HostError
+    = NoHostAvailable
+    deriving Typeable
+
+instance Exception HostError
+
+instance Show HostError where
+    show NoHostAvailable = "Database.CQL.IO.NoHostAvailable"
 
 -----------------------------------------------------------------------------
 -- ConnectionError

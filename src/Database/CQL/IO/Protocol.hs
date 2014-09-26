@@ -31,4 +31,3 @@ serialise v f r i =
 
 quoted :: LT.Text -> LT.Text
 quoted s = "\"" <> LT.replace "\"" "\"\"" s <> "\""
-

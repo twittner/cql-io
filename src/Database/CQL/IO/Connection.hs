@@ -2,8 +2,11 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE BangPatterns      #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE TemplateHaskell     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Database.CQL.IO.Connection
     ( Connection
@@ -11,14 +14,29 @@ module Database.CQL.IO.Connection
     , connect
     , close
     , request
+    , startup
+    , register
+    , query
+    , inet2SockAddr
+    , sockAddr2Inet
+
+    , ConnectionSettings
+    , defSettings
+    , connectTimeout
+    , sendTimeout
+    , responseTimeout
+    , maxStreams
+    , compression
     ) where
 
 import Control.Applicative
 import Control.Concurrent (myThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.MVar
-import Control.Exception
+import Control.Exception (throwTo)
+import Control.Lens ((^.), makeLenses, view)
 import Control.Monad
+import Control.Monad.Catch
 import Data.ByteString.Builder
 import Data.ByteString.Lazy (ByteString)
 import Data.Int
@@ -30,7 +48,6 @@ import Data.Word
 import Database.CQL.Protocol
 import Database.CQL.IO.Hexdump
 import Database.CQL.IO.Protocol
-import Database.CQL.IO.Settings
 import Database.CQL.IO.Sync (Sync)
 import Database.CQL.IO.Types
 import Database.CQL.IO.Tickets (Pool, toInt, markAvailable)
@@ -40,7 +57,7 @@ import Network
 import Network.Socket hiding (connect, close, recv, send)
 import Network.Socket.ByteString.Lazy (sendAll)
 import System.IO (nativeNewline, Newline (..))
-import System.Logger hiding (Settings, close)
+import System.Logger hiding (Settings, close, defSettings, settings)
 import System.Timeout
 
 import qualified Data.ByteString           as B
@@ -51,45 +68,71 @@ import qualified Database.CQL.IO.Tickets   as Tickets
 import qualified Network.Socket            as S
 import qualified Network.Socket.ByteString as NB
 
+data ConnectionSettings = ConnectionSettings
+    { _connectTimeout  :: Milliseconds
+    , _sendTimeout     :: Milliseconds
+    , _responseTimeout :: Milliseconds
+    , _maxStreams      :: Int
+    , _compression     :: Compression
+    }
+
 type Streams = Vector (Sync (Header, ByteString))
 
 data Connection = Connection
-    { sock    :: !Socket
-    , streams :: Streams
-    , wLock   :: MVar ()
-    , reader  :: Async ()
-    , tickets :: !Pool
-    , logger  :: !Logger
-    , ident   :: !Unique
+    { _settings :: !ConnectionSettings
+    , _tmanager :: !TimeoutManager
+    , _protocol :: !Version
+    , _sock     :: !Socket
+    , _streams  :: !Streams
+    , _wLock    :: MVar ()
+    , _reader   :: Async ()
+    , _tickets  :: !Pool
+    , _logger   :: !Logger
+    , _ident    :: !Unique
     }
 
+makeLenses ''ConnectionSettings
+makeLenses ''Connection
+
 instance Eq Connection where
-    a == b = ident a == ident b
+    a == b = a^.ident == b^.ident
 
 instance Show Connection where
-    show c = "Connection" ++ show (sock c)
+    show c = "Connection" ++ show (c^.sock)
 
-resolve :: String -> Word16 -> IO AddrInfo
+defSettings :: ConnectionSettings
+defSettings =
+    ConnectionSettings 5000  -- connect timeout
+                       3000  -- send timeout
+                       10000 -- response timeout
+                       128   -- max streams per connection
+                       noCompression
+
+resolve :: String -> Word16 -> IO SockAddr
 resolve host port =
-    head <$> getAddrInfo (Just hints) (Just host) (Just (show port))
+    addrAddress . head <$> getAddrInfo (Just hints) (Just host) (Just (show port))
   where
     hints = defaultHints { addrFlags = [AI_ADDRCONFIG], addrSocketType = Stream }
 
-connect :: Settings -> Logger -> AddrInfo -> Compression -> EventHandler -> IO Connection
-connect t g a c f =
+connect :: ConnectionSettings -> TimeoutManager -> Version -> Logger -> SockAddr -> EventHandler -> IO Connection
+connect t m v g a f =
     bracketOnError mkSock S.close $ \s -> do
-        ok <- timeout (ms (sConnectTimeout t) * 1000) (S.connect s (addrAddress a))
+        ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s a)
         unless (isJust ok) $
-            throwIO ConnectTimeout
+            throwM ConnectTimeout
         open s
   where
-    mkSock = socket (addrFamily a) (addrSocketType a) (addrProtocol a)
+    mkSock = socket (familyOf a) Stream defaultProtocol
     open s = do
-        tck <- Tickets.pool (sMaxStreams t)
-        syn <- Vector.replicateM (sMaxStreams t) Sync.create
+        tck <- Tickets.pool (t^.maxStreams)
+        syn <- Vector.replicateM (t^.maxStreams) Sync.create
         lck <- newMVar ()
-        rdr <- async (runReader (sProtoVersion t) g c f tck s syn)
-        Connection s syn lck rdr tck g <$> newUnique
+        rdr <- async (runReader v g (t^.compression) f tck s syn)
+        Connection t m v s syn lck rdr tck g <$> newUnique
+
+    familyOf (SockAddrInet  {..}) = AF_INET
+    familyOf (SockAddrInet6 {..}) = AF_INET6
+    familyOf (SockAddrUnix  {..}) = AF_UNIX
 
 runReader :: Version -> Logger -> Compression -> EventHandler -> Pool -> Socket -> Streams -> IO ()
 runReader v g cmp fn tck sck syn = run `finally` cleanup
@@ -99,9 +142,9 @@ runReader v g cmp fn tck sck syn = run `finally` cleanup
         case fromStreamId $ streamId (fst x) of
             -1 ->
                 case parse cmp x :: Response () () () of
-                    RsError _ e -> throwIO e
+                    RsError _ e -> throwM e
                     RsEvent _ e -> fn e
-                    r           -> throwIO (UnexpectedResponse' r)
+                    r           -> throwM (UnexpectedResponse' r)
             sid -> do
                 ok <- Sync.put (syn ! sid) x
                 unless ok $
@@ -113,38 +156,67 @@ runReader v g cmp fn tck sck syn = run `finally` cleanup
         S.close sck
 
 close :: Connection -> IO ()
-close = cancel . reader
+close = cancel . view reader
 
-request :: Settings -> TimeoutManager -> Connection -> (Int -> ByteString) -> IO (Header, ByteString)
-request s t c f = send >>= receive
+startup :: Connection -> IO ()
+startup c = do
+    let cmp = c^.settings.compression
+    let req = RqStartup (Startup Cqlv300 (algorithm cmp))
+    let enc = serialise (c^.protocol) cmp (req :: Request () () ())
+    res <- request c enc
+    (parse cmp res :: Response () () ()) `seq` return ()
+
+register :: Connection -> [EventType] -> IO ()
+register c e = do
+    let req = RqRegister (Register e) :: Request () () ()
+    let enc = serialise (c^.protocol) noCompression req
+    res <- request c enc
+    case parse (c^.settings.compression) res :: Response () () () of
+        RsReady _ Ready -> return ()
+        other           -> throwM (UnexpectedResponse' other)
+
+query :: forall k a b . (Tuple a, Tuple b, Show b)
+      => Connection -> Consistency -> QueryString k a b -> a -> IO [b]
+query c cons q p = do
+    let req = RqQuery (Query q params) :: Request k a b
+    let enc = serialise (c^.protocol) noCompression req
+    res <- request c enc
+    case parse (c^.settings.compression) res :: Response k a b of
+        RsResult _ (RowsResult _ b) -> return b
+        other                       -> throwM (UnexpectedResponse' other)
   where
-    send = withTimeout t (sSendTimeout s) (close c) $ do
-        i <- toInt <$> Tickets.get (tickets c)
+    params = QueryParams cons False p Nothing Nothing Nothing
+
+request :: Connection -> (Int -> ByteString) -> IO (Header, ByteString)
+request c f = send >>= receive
+  where
+    send = withTimeout (c^.tmanager) (c^.settings.sendTimeout) (close c) $ do
+        i <- toInt <$> Tickets.get (c^.tickets)
         let req = f i
-        trace (logger c) $ "socket" .= fd (sock c)
+        trace (c^.logger) $ "socket" .= fd (c^.sock)
             ~~ "stream" .= i
             ~~ "type"   .= val "request"
             ~~ msg' (hexdump (L.take 160 req))
-        withMVar (wLock c) $
-            const $ sendAll (sock c) req
+        withMVar (c^.wLock) $
+            const $ sendAll (c^.sock) req
         return i
 
     receive i = do
         let e = Timeout (show c ++ ":" ++ show i)
         tid <- myThreadId
-        withTimeout t (sResponseTimeout s) (throwTo tid e) $ do
-            x <- Sync.get (streams c ! i) `onException` Sync.kill (streams c ! i)
-            markAvailable (tickets c) i
+        withTimeout (c^.tmanager) (c^.settings.responseTimeout) (throwTo tid e) $ do
+            x <- Sync.get (view streams c ! i) `onException` Sync.kill (view streams c ! i)
+            markAvailable (c^.tickets) i
             return x
 
 readSocket :: Version -> Logger -> Socket -> IO (Header, ByteString)
 readSocket v g s = do
-    b <- recv 8 s
+    b <- recv (if v == V3 then 9 else 8) s
     h <- case header v b of
-            Left  e -> throwIO $ InternalError ("response header reading: " ++ e)
+            Left  e -> throwM $ InternalError ("response header reading: " ++ e)
             Right h -> return h
     case headerType h of
-        RqHeader -> throwIO $ InternalError "unexpected request header"
+        RqHeader -> throwM $ InternalError "unexpected request header"
         RsHeader -> do
             let len = lengthRepr (bodyLength h)
             x <- recv (fromIntegral len) s
@@ -161,10 +233,19 @@ recv n c = toLazyByteString <$> go 0 mempty
     go !k !bb = do
         a <- NB.recv c (n - k)
         when (B.null a) $
-            throwIO ConnectionClosed
+            throwM ConnectionClosed
         let b = bb <> byteString a
             m = B.length a + k
         if m < n then go m b else return b
+
+inet2SockAddr :: PortNumber -> Inet -> SockAddr
+inet2SockAddr p (Inet4 a)       = SockAddrInet p a
+inet2SockAddr p (Inet6 a b c d) = SockAddrInet6 p 0 (a, b, c, d) 0
+
+sockAddr2Inet :: SockAddr -> Inet
+sockAddr2Inet (SockAddrInet _ a)                 = Inet4 a
+sockAddr2Inet (SockAddrInet6 _ _ (a, b, c, d) _) = Inet6 a b c d
+sockAddr2Inet _                                  = error "sockAddr2Inet: not IP4/IP6 address"
 
 -- logging helpers:
 

@@ -5,12 +5,10 @@
 module Database.CQL.IO
     ( Settings
     , defSettings
-    , setCqlVersion
-    , setProtoVersion
+    , setProtocolVersion
     , setCompression
-    , setHost
-    , setPort
-    , setKeyspace
+    , setBootstrapHost
+    , setBootstrapPort
     , setIdleTimeout
     , setMaxConnections
     , setMaxStreams
@@ -21,10 +19,14 @@ module Database.CQL.IO
     , setMaxTimeouts
     , setResponseTimeout
     , setOnEventHandler
+    , setPolicy
 
-    , Pool
-    , mkPool
+    , Cluster
+    , mkCluster
     , shutdown
+
+    , Policy
+    , random
 
     , Client
     , runClient
@@ -44,9 +46,6 @@ module Database.CQL.IO
     , register
     , batch
 
-    -- * Transfer settings
-    , uncompressed
-
     , request
     , command
 
@@ -62,6 +61,7 @@ import Control.Monad.Catch
 import Control.Monad (void)
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
+import Database.CQL.IO.Cluster.Policies
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Types
 
