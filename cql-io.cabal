@@ -29,8 +29,13 @@ library
         Database.CQL.IO
 
     other-modules:
-        Database.CQL.IO.Client
+        Database.CQL.IO.Cluster
+        Database.CQL.IO.Cluster.Discovery
+        Database.CQL.IO.Cluster.Event
+        Database.CQL.IO.Cluster.Host
+        Database.CQL.IO.Cluster.Policies
         Database.CQL.IO.Connection
+        Database.CQL.IO.Hexdump
         Database.CQL.IO.Pool
         Database.CQL.IO.Protocol
         Database.CQL.IO.Settings
@@ -38,12 +43,6 @@ library
         Database.CQL.IO.Tickets
         Database.CQL.IO.Timeouts
         Database.CQL.IO.Types
-        Database.CQL.IO.Hexdump
-        Database.CQL.IO.Cluster
-        Database.CQL.IO.Cluster.Event
-        Database.CQL.IO.Cluster.Host
-        Database.CQL.IO.Cluster.Discovery
-        Database.CQL.IO.Cluster.Policies
 
     build-depends:
           async            == 2.0.*
@@ -54,6 +53,7 @@ library
         , cql              == 3.0.*
         , exceptions       >= 0.4     && < 1.0
         , hashable         >= 1.2     && < 2.0
+        , iproute          >= 1.3     && < 1.4
         , lens             >= 4.4     && < 4.5
         , mtl              >= 2.1     && < 2.3
         , mwc-random       >= 0.13    && < 0.14

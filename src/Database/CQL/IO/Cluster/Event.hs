@@ -12,5 +12,3 @@ data ClusterEvent
     | HostRemoved !SockAddr
     | HostUp      !SockAddr
     | HostDown    !SockAddr
-
-

@@ -17,8 +17,9 @@ module Database.CQL.IO.Connection
     , startup
     , register
     , query
-    , inet2SockAddr
-    , sockAddr2Inet
+    , address
+    , ip2SockAddr
+    , sockAddr2IP
 
     , ConnectionSettings
     , defSettings
@@ -40,6 +41,7 @@ import Control.Monad.Catch
 import Data.ByteString.Builder
 import Data.ByteString.Lazy (ByteString)
 import Data.Int
+import Data.IP
 import Data.Maybe (isJust)
 import Data.Monoid
 import Data.Unique
@@ -80,6 +82,7 @@ type Streams = Vector (Sync (Header, ByteString))
 
 data Connection = Connection
     { _settings :: !ConnectionSettings
+    , _address  :: !SockAddr
     , _tmanager :: !TimeoutManager
     , _protocol :: !Version
     , _sock     :: !Socket
@@ -128,7 +131,7 @@ connect t m v g a f =
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
         lck <- newMVar ()
         rdr <- async (runReader v g (t^.compression) f tck s syn)
-        Connection t m v s syn lck rdr tck g <$> newUnique
+        Connection t a m v s syn lck rdr tck g <$> newUnique
 
     familyOf (SockAddrInet  {..}) = AF_INET
     familyOf (SockAddrInet6 {..}) = AF_INET6
@@ -238,14 +241,14 @@ recv n c = toLazyByteString <$> go 0 mempty
             m = B.length a + k
         if m < n then go m b else return b
 
-inet2SockAddr :: PortNumber -> Inet -> SockAddr
-inet2SockAddr p (Inet4 a)       = SockAddrInet p a
-inet2SockAddr p (Inet6 a b c d) = SockAddrInet6 p 0 (a, b, c, d) 0
+ip2SockAddr :: PortNumber -> IP -> SockAddr
+ip2SockAddr p (IPv4 a) = SockAddrInet p (toHostAddress a)
+ip2SockAddr p (IPv6 a) = SockAddrInet6 p 0 (toHostAddress6 a) 0
 
-sockAddr2Inet :: SockAddr -> Inet
-sockAddr2Inet (SockAddrInet _ a)                 = Inet4 a
-sockAddr2Inet (SockAddrInet6 _ _ (a, b, c, d) _) = Inet6 a b c d
-sockAddr2Inet _                                  = error "sockAddr2Inet: not IP4/IP6 address"
+sockAddr2IP :: SockAddr -> IP
+sockAddr2IP (SockAddrInet _ a)      = IPv4 (fromHostAddress a)
+sockAddr2IP (SockAddrInet6 _ _ a _) = IPv6 (fromHostAddress6 a)
+sockAddr2IP _                       = error "sockAddr2IP: not IP4/IP6 address"
 
 -- logging helpers:
 

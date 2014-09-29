@@ -12,8 +12,7 @@ import Data.Time
 import Data.Word
 import Database.CQL.Protocol
 import Database.CQL.IO.Connection
-import Database.CQL.IO.Cluster.Host (Host)
-import Database.CQL.IO.Cluster.Policies (Policy, random)
+import Database.CQL.IO.Cluster.Policies (HostMap, Policy, random)
 import Database.CQL.IO.Connection as C
 import Database.CQL.IO.Pool as P
 import Database.CQL.IO.Types (EventHandler, Milliseconds (..))
@@ -26,7 +25,7 @@ data Settings = Settings
     , _bootstrapPort :: Word16
     , _maxWaitQueue  :: Maybe Word64
     , _onEvent       :: EventHandler
-    , _policy        :: [Host] -> IO Policy
+    , _policy        :: HostMap -> IO Policy
     }
 
 makeLenses ''Settings
@@ -56,7 +55,7 @@ setBootstrapPort v = set bootstrapPort v
 setOnEventHandler :: EventHandler -> Settings -> Settings
 setOnEventHandler v = set onEvent v
 
-setPolicy :: ([Host] -> IO Policy) -> Settings -> Settings
+setPolicy :: (HostMap -> IO Policy) -> Settings -> Settings
 setPolicy v = set policy v
 
 setMaxWaitQueue :: Word64 -> Settings -> Settings

@@ -4,11 +4,12 @@
 
 module Database.CQL.IO.Cluster.Policies
     ( Policy (..)
+    , HostMap
     , random
     ) where
 
 import Control.Applicative
-import Control.Lens ((^.), view, set)
+import Control.Lens ((^.), set)
 import Data.IORef
 import Data.Map.Strict (Map)
 import Database.CQL.IO.Cluster.Event
@@ -18,6 +19,8 @@ import System.Random.MWC
 
 import qualified Data.Map.Strict as Map
 
+type HostMap = IORef (Map SockAddr Host)
+
 data Policy = Policy
     { handler :: ClusterEvent -> IO ()
     , addHost :: Host -> IO ()
@@ -25,15 +28,13 @@ data Policy = Policy
     }
 
 data RRState = RRState
-    { rrGen   :: !GenIO
-    , rrHosts :: IORef (Map SockAddr Host)
+    { rrHosts :: HostMap
+    , rrGen   :: !GenIO
     }
 
-random :: [Host] -> IO Policy
+random :: IORef (Map SockAddr Host) -> IO Policy
 random hh = do
-    state <- RRState
-            <$> createSystemRandom
-            <*> newIORef (Map.fromList $ zip (map (view hostAddr) hh) hh)
+    state <- RRState hh <$> createSystemRandom
     return $ Policy (onEvent state) (insert state) (pickHost state)
   where
     onEvent :: RRState -> ClusterEvent -> IO ()

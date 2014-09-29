@@ -6,13 +6,16 @@
 
 module Database.CQL.IO.Cluster.Host where
 
-import Control.Lens (makeLenses)
-import Data.Text (Text)
+import Control.Lens (makeLenses, (^.))
+import Data.IP
+import Data.List (intercalate)
+import Data.Text (Text, unpack)
 import Database.CQL.IO.Pool
 import Network.Socket (SockAddr)
 
 data Host = Host
-    { _hostAddr   :: !SockAddr
+    { _inetAddr   :: !IP
+    , _hostAddr   :: !SockAddr
     , _alive      :: !Bool
     , _dataCentre :: (Maybe Text)
     , _rack       :: (Maybe Text)
@@ -26,3 +29,10 @@ data Distance
     deriving (Eq, Ord, Show)
 
 makeLenses ''Host
+
+instance Show Host where
+    show h = intercalate ":"
+           [ maybe "" unpack (h^.dataCentre)
+           , maybe "" unpack (h^.rack)
+           , show (h^.inetAddr)
+           ]

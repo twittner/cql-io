@@ -28,9 +28,6 @@ module Database.CQL.IO
     , Policy
     , random
 
-    , Client
-    , runClient
-
     , query
     , write
     , schema
@@ -60,7 +57,7 @@ module Database.CQL.IO
 import Control.Monad.Catch
 import Control.Monad (void)
 import Database.CQL.Protocol
-import Database.CQL.IO.Client
+import Database.CQL.IO.Cluster
 import Database.CQL.IO.Cluster.Policies
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Types
@@ -68,26 +65,26 @@ import Database.CQL.IO.Types
 ------------------------------------------------------------------------------
 -- query
 
-query' :: (Tuple a, Tuple b) => QueryString k a b -> QueryParams a -> Client (Response k a b)
-query' q p = do
-    r <- request (RqQuery (Query q p))
+query' :: (Tuple a, Tuple b) => Cluster -> QueryString k a b -> QueryParams a -> IO (Response k a b)
+query' c q p = do
+    r <- request c (RqQuery (Query q p))
     case r of
         RsError _ e -> throwM e
         _           -> return r
 
-query :: (Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> Client [b]
-query q p = do
-    r <- query' q p
+query :: (Tuple a, Tuple b) => Cluster -> QueryString R a b -> QueryParams a -> IO [b]
+query c q p = do
+    r <- query' c q p
     case r of
         RsResult _ (RowsResult _ b) -> return b
         _                           -> throwM UnexpectedResponse
 
-write :: (Tuple a) => QueryString W a () -> QueryParams a -> Client ()
-write q p = void $ query' q p
+write :: (Tuple a) => Cluster -> QueryString W a () -> QueryParams a -> IO ()
+write c q p = void $ query' c q p
 
-schema :: (Tuple a) => QueryString S a () -> QueryParams a -> Client (Maybe SchemaChange)
-schema x y = do
-    r <- query' x y
+schema :: (Tuple a) => Cluster -> QueryString S a () -> QueryParams a -> IO (Maybe SchemaChange)
+schema c x y = do
+    r <- query' c x y
     case r of
         RsResult _ (SchemaChangeResult s) -> return $ Just s
         RsResult _ VoidResult             -> return Nothing
@@ -96,57 +93,57 @@ schema x y = do
 ------------------------------------------------------------------------------
 -- prepare
 
-prepare' :: (Tuple a, Tuple b) => QueryString k a b -> Client (QueryId k a b)
-prepare' q = do
-    r <- request (RqPrepare (Prepare q))
+prepare' :: (Tuple a, Tuple b) => Cluster -> QueryString k a b -> IO (QueryId k a b)
+prepare' c q = do
+    r <- request c (RqPrepare (Prepare q))
     case r of
         RsResult _ (PreparedResult i _ _) -> return i
-        RsError _ e                       -> throwM e
+        RsError  _ e                      -> throwM e
         _                                 -> throwM UnexpectedResponse
 
-prepare :: (Tuple a, Tuple b) => QueryString R a b -> Client (QueryId R a b)
+prepare :: (Tuple a, Tuple b) => Cluster -> QueryString R a b -> IO (QueryId R a b)
 prepare = prepare'
 
-prepareWrite :: (Tuple a) => QueryString W a () -> Client (QueryId W a ())
+prepareWrite :: (Tuple a) => Cluster -> QueryString W a () -> IO (QueryId W a ())
 prepareWrite = prepare'
 
-prepareSchema :: (Tuple a) => QueryString S a () -> Client (QueryId S a ())
+prepareSchema :: (Tuple a) => Cluster -> QueryString S a () -> IO (QueryId S a ())
 prepareSchema = prepare'
 
 ------------------------------------------------------------------------------
 -- execute
 
-execute' :: (Tuple a, Tuple b) => QueryId k a b -> QueryParams a -> Client (Response k a b)
-execute' q p = do
-    r <- request (RqExecute (Execute q p))
+execute' :: (Tuple a, Tuple b) => Cluster -> QueryId k a b -> QueryParams a -> IO (Response k a b)
+execute' c q p = do
+    r <- request c (RqExecute (Execute q p))
     case r of
         RsError  _ e -> throwM e
         _            -> return r
 
-execute :: (Tuple a, Tuple b) => QueryId R a b -> QueryParams a -> Client [b]
-execute q p = do
-    r <- execute' q p
+execute :: (Tuple a, Tuple b) => Cluster -> QueryId R a b -> QueryParams a -> IO [b]
+execute c q p = do
+    r <- execute' c q p
     case r of
         RsResult _ (RowsResult _ b) -> return b
         _                           -> throwM UnexpectedResponse
 
-executeWrite :: (Tuple a) => QueryId W a () -> QueryParams a -> Client ()
-executeWrite q p = void $ execute' q p
+executeWrite :: (Tuple a) => Cluster -> QueryId W a () -> QueryParams a -> IO ()
+executeWrite c q p = void $ execute' c q p
 
-executeSchema :: (Tuple a) => QueryId S a () -> QueryParams a -> Client (Maybe SchemaChange)
-executeSchema q p = do
-    r <- execute' q p
+executeSchema :: (Tuple a) => Cluster -> QueryId S a () -> QueryParams a -> IO (Maybe SchemaChange)
+executeSchema c q p = do
+    r <- execute' c q p
     case r of
         RsResult _ (SchemaChangeResult s) -> return $ Just s
         RsResult _ VoidResult             -> return Nothing
         _                                 -> throwM UnexpectedResponse
 
-batch :: Batch -> Client ()
-batch b = command (RqBatch b)
+batch :: Cluster -> Batch -> IO ()
+batch c b = command c (RqBatch b)
 
 ------------------------------------------------------------------------------
 -- register
 
-register :: [EventType] -> Client ()
-register = command . RqRegister . Register
+register :: Cluster -> [EventType] -> IO ()
+register c = command c . RqRegister . Register
 
