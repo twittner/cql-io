@@ -29,3 +29,6 @@ peers = "SELECT host_id, peer, rpc_address, data_center, rack FROM system.peers"
 
 peer :: QueryString R (Identity IP) (UUID, IP, IP, Text, Text)
 peer = "SELECT host_id, peer, rpc_address, data_center, rack FROM system.peers where peer = ?"
+
+local :: QueryString R () (UUID, Text, Text)
+local = "SELECT host_id, data_center, rack FROM system.local WHERE key='local'"

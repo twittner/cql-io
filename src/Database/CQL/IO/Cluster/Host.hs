@@ -22,6 +22,12 @@ data Host = Host
     , _pool       :: !Pool
     }
 
+data HostEvent
+    = HostAdded   !Host
+    | HostRemoved !SockAddr
+    | HostUp      !SockAddr
+    | HostDown    !SockAddr
+
 data Distance
     = Local
     | Remote

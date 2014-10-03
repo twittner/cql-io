@@ -7,7 +7,8 @@
 
 module Database.CQL.IO.Settings where
 
-import Control.Lens
+import Control.Lens hiding ((<|))
+import Data.List.NonEmpty (NonEmpty (..), (<|))
 import Data.Time
 import Data.Word
 import Database.CQL.Protocol
@@ -16,13 +17,14 @@ import Database.CQL.IO.Cluster.Policies (HostMap, Policy, random)
 import Database.CQL.IO.Connection as C
 import Database.CQL.IO.Pool as P
 import Database.CQL.IO.Types (EventHandler, Milliseconds (..))
+import Network.Socket (PortNumber (..))
 
 data Settings = Settings
     { _poolSettings  :: PoolSettings
     , _connSettings  :: ConnectionSettings
     , _protoVersion  :: Version
-    , _bootstrapHost :: String
-    , _bootstrapPort :: Word16
+    , _portnumber    :: PortNumber
+    , _contacts      :: NonEmpty String
     , _maxWaitQueue  :: Maybe Word64
     , _onEvent       :: EventHandler
     , _policy        :: HostMap -> IO Policy
@@ -35,7 +37,8 @@ defSettings = Settings
     P.defSettings
     C.defSettings
     V3
-    "localhost" 9042
+    (fromInteger 9042)
+    ("localhost" :| [])
     Nothing
     (const $ return ())
     random
@@ -46,11 +49,14 @@ defSettings = Settings
 setProtocolVersion :: Version -> Settings -> Settings
 setProtocolVersion v = set protoVersion v
 
-setBootstrapHost :: String -> Settings -> Settings
-setBootstrapHost v = set bootstrapHost v
+setContacts :: String -> [String] -> Settings -> Settings
+setContacts v vv = set contacts (v :| vv)
 
-setBootstrapPort :: Word16 -> Settings -> Settings
-setBootstrapPort v = set bootstrapPort v
+addContact :: String -> Settings -> Settings
+addContact v = over contacts (v <|)
+
+setPortNumber :: PortNumber -> Settings -> Settings
+setPortNumber v = set portnumber v
 
 setOnEventHandler :: EventHandler -> Settings -> Settings
 setOnEventHandler v = set onEvent v
@@ -99,3 +105,6 @@ setSendTimeout v = set (connSettings.sendTimeout) (Ms $ round (1000 * v))
 
 setResponseTimeout :: NominalDiffTime -> Settings -> Settings
 setResponseTimeout v = set (connSettings.responseTimeout) (Ms $ round (1000 * v))
+
+setKeyspace :: Keyspace -> Settings -> Settings
+setKeyspace v = set (connSettings.defKeyspace) (Just v)

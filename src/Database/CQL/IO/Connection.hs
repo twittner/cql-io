@@ -17,7 +17,9 @@ module Database.CQL.IO.Connection
     , startup
     , register
     , query
+    , useKeyspace
     , address
+    , protocol
     , ip2SockAddr
     , sockAddr2IP
 
@@ -28,6 +30,7 @@ module Database.CQL.IO.Connection
     , responseTimeout
     , maxStreams
     , compression
+    , defKeyspace
     ) where
 
 import Control.Applicative
@@ -44,9 +47,9 @@ import Data.Int
 import Data.IP
 import Data.Maybe (isJust)
 import Data.Monoid
+import Data.Text.Lazy (fromStrict)
 import Data.Unique
 import Data.Vector (Vector, (!))
-import Data.Word
 import Database.CQL.Protocol
 import Database.CQL.IO.Hexdump
 import Database.CQL.IO.Protocol
@@ -76,6 +79,7 @@ data ConnectionSettings = ConnectionSettings
     , _responseTimeout :: Milliseconds
     , _maxStreams      :: Int
     , _compression     :: Compression
+    , _defKeyspace     :: Maybe Keyspace
     }
 
 type Streams = Vector (Sync (Header, ByteString))
@@ -105,13 +109,14 @@ instance Show Connection where
 
 defSettings :: ConnectionSettings
 defSettings =
-    ConnectionSettings 5000  -- connect timeout
-                       3000  -- send timeout
-                       10000 -- response timeout
-                       128   -- max streams per connection
-                       noCompression
+    ConnectionSettings 5000          -- connect timeout
+                       3000          -- send timeout
+                       10000         -- response timeout
+                       128           -- max streams per connection
+                       noCompression -- compression
+                       Nothing       -- keyspace
 
-resolve :: String -> Word16 -> IO SockAddr
+resolve :: String -> PortNumber -> IO SockAddr
 resolve host port =
     addrAddress . head <$> getAddrInfo (Just hints) (Just host) (Just (show port))
   where
@@ -123,7 +128,9 @@ connect t m v g a f =
         ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s a)
         unless (isJust ok) $
             throwM ConnectTimeout
-        open s
+        c <- open s
+        validateSettings c
+        return c
   where
     mkSock = socket (familyOf a) Stream defaultProtocol
     open s = do
@@ -160,35 +167,6 @@ runReader v g cmp fn tck sck syn = run `finally` cleanup
 
 close :: Connection -> IO ()
 close = cancel . view reader
-
-startup :: Connection -> IO ()
-startup c = do
-    let cmp = c^.settings.compression
-    let req = RqStartup (Startup Cqlv300 (algorithm cmp))
-    let enc = serialise (c^.protocol) cmp (req :: Request () () ())
-    res <- request c enc
-    (parse cmp res :: Response () () ()) `seq` return ()
-
-register :: Connection -> [EventType] -> IO ()
-register c e = do
-    let req = RqRegister (Register e) :: Request () () ()
-    let enc = serialise (c^.protocol) noCompression req
-    res <- request c enc
-    case parse (c^.settings.compression) res :: Response () () () of
-        RsReady _ Ready -> return ()
-        other           -> throwM (UnexpectedResponse' other)
-
-query :: forall k a b . (Tuple a, Tuple b, Show b)
-      => Connection -> Consistency -> QueryString k a b -> a -> IO [b]
-query c cons q p = do
-    let req = RqQuery (Query q params) :: Request k a b
-    let enc = serialise (c^.protocol) noCompression req
-    res <- request c enc
-    case parse (c^.settings.compression) res :: Response k a b of
-        RsResult _ (RowsResult _ b) -> return b
-        other                       -> throwM (UnexpectedResponse' other)
-  where
-    params = QueryParams cons False p Nothing Nothing Nothing
 
 request :: Connection -> (Int -> ByteString) -> IO (Header, ByteString)
 request c f = send >>= receive
@@ -250,6 +228,68 @@ sockAddr2IP (SockAddrInet _ a)      = IPv4 (fromHostAddress a)
 sockAddr2IP (SockAddrInet6 _ _ a _) = IPv6 (fromHostAddress6 a)
 sockAddr2IP _                       = error "sockAddr2IP: not IP4/IP6 address"
 
+-----------------------------------------------------------------------------
+-- Operations
+
+startup :: Connection -> IO ()
+startup c = do
+    let cmp = c^.settings.compression
+    let req = RqStartup (Startup Cqlv300 (algorithm cmp))
+    let enc = serialise (c^.protocol) cmp (req :: Request () () ())
+    res <- request c enc
+    (parse cmp res :: Response () () ()) `seq` return ()
+
+register :: Connection -> [EventType] -> IO ()
+register c e = do
+    let req = RqRegister (Register e) :: Request () () ()
+    let enc = serialise (c^.protocol) (c^.settings.compression) req
+    res <- request c enc
+    case parse (c^.settings.compression) res :: Response () () () of
+        RsReady _ Ready -> return ()
+        other           -> throwM (UnexpectedResponse' other)
+
+validateSettings :: Connection -> IO ()
+validateSettings c = do
+    Supported ca _ <- supportedOptions c
+    let x = algorithm (c^.settings.compression)
+    unless (x == None || x `elem` ca) $
+        throwM $ UnsupportedCompression ca
+
+supportedOptions :: Connection -> IO Supported
+supportedOptions c = do
+    let options = RqOptions Options :: Request () () ()
+    res <- request c (serialise (c^.protocol) noCompression options)
+    case parse noCompression res :: Response () () () of
+        RsSupported _ x -> return x
+        other           -> throwM (UnexpectedResponse' other)
+
+useKeyspace :: Connection -> Keyspace -> IO ()
+useKeyspace c ks = do
+    let cmp    = c^.settings.compression
+        params = QueryParams One False () Nothing Nothing Nothing
+        kspace = quoted (fromStrict $ unKeyspace ks)
+        req    = RqQuery (Query (QueryString $ "use " <> kspace) params)
+    res <- request c (serialise (c^.protocol) cmp req)
+    case parse cmp res :: Response () () () of
+        RsResult _ (SetKeyspaceResult _) -> return ()
+        other                            -> throwM (UnexpectedResponse' other)
+
+query :: forall k a b . (Tuple a, Tuple b, Show b)
+      => Connection
+      -> Consistency
+      -> QueryString k a b
+      -> a
+      -> IO [b]
+query c cons q p = do
+    let req = RqQuery (Query q params) :: Request k a b
+    let enc = serialise (c^.protocol) (c^.settings.compression) req
+    res <- request c enc
+    case parse (c^.settings.compression) res :: Response k a b of
+        RsResult _ (RowsResult _ b) -> return b
+        other                       -> throwM (UnexpectedResponse' other)
+  where
+    params = QueryParams cons False p Nothing Nothing Nothing
+
 -- logging helpers:
 
 fd :: Socket -> Int32
@@ -259,3 +299,4 @@ msg' :: ByteString -> Msg -> Msg
 msg' x = msg $ case nativeNewline of
     LF   -> val "\n"   +++ x
     CRLF -> val "\r\n" +++ x
+

@@ -100,3 +100,6 @@ ignore :: IO () -> IO ()
 ignore a = catch a (const $ return () :: SomeException -> IO ())
 {-# INLINE ignore #-}
 
+unit :: Monad m => a -> m ()
+unit = const $ return ()
+{-# INLINE unit #-}

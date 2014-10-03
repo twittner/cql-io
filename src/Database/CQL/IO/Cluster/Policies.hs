@@ -2,18 +2,22 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+{-# LANGUAGE TupleSections #-}
+
 module Database.CQL.IO.Cluster.Policies
     ( Policy (..)
     , HostMap
     , random
+    , constant
     ) where
 
 import Control.Applicative
-import Control.Lens ((^.), set)
+import Control.Lens ((^.), set, view)
 import Data.IORef
 import Data.Map.Strict (Map)
-import Database.CQL.IO.Cluster.Event
+import Data.Maybe (listToMaybe)
 import Database.CQL.IO.Cluster.Host
+import Database.CQL.IO.Types (unit)
 import Network.Socket (SockAddr)
 import System.Random.MWC
 
@@ -22,7 +26,7 @@ import qualified Data.Map.Strict as Map
 type HostMap = IORef (Map SockAddr Host)
 
 data Policy = Policy
-    { handler :: ClusterEvent -> IO ()
+    { handler :: HostEvent -> IO ()
     , addHost :: Host -> IO ()
     , getHost :: IO (Maybe Host)
     }
@@ -32,12 +36,21 @@ data RRState = RRState
     , rrGen   :: !GenIO
     }
 
-random :: IORef (Map SockAddr Host) -> IO Policy
+-- | Always return the same host.
+constant :: HostMap -> IO Policy
+constant m = do
+    r <- newIORef =<< listToMaybe . Map.elems <$> readIORef m
+    return $ Policy unit (insert r) (readIORef r)
+  where
+    insert r h = atomicModifyIORef' r $ maybe (Just h, ()) ((, ()) . Just)
+
+-- | Return hosts randomly.
+random :: HostMap -> IO Policy
 random hh = do
     state <- RRState hh <$> createSystemRandom
     return $ Policy (onEvent state) (insert state) (pickHost state)
   where
-    onEvent :: RRState -> ClusterEvent -> IO ()
+    onEvent :: RRState -> HostEvent -> IO ()
     onEvent rr (HostAdded   h) = withMap rr (Map.insert (h^.hostAddr) h)
     onEvent rr (HostRemoved s) = withMap rr (Map.delete s)
     onEvent rr (HostUp      s) = withMap rr (Map.adjust (set alive True) s)
@@ -51,7 +64,7 @@ random hh = do
 
     pickHost :: RRState -> IO (Maybe Host)
     pickHost rr = do
-        h <- readIORef (rrHosts rr)
+        h <- Map.filter (view alive) <$> readIORef (rrHosts rr)
         let pickRandom = uniformR (0, Map.size h - 1) (rrGen rr)
         if Map.null h
             then return Nothing

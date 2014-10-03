@@ -15,7 +15,7 @@ module Database.CQL.IO.Pool
     , with
     , tryWith
 
-    , PoolSettings (..)
+    , PoolSettings
     , defSettings
     , idleTimeout
     , maxConnections
