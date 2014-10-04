@@ -7,8 +7,8 @@
 module Database.CQL.IO.Cluster.Policies
     ( Policy (..)
     , HostMap
-    , empty
     , random
+    , roundRobin
     , constant
     ) where
 
@@ -31,44 +31,54 @@ data Policy = Policy
     , getHost :: IO (Maybe Host)
     }
 
-data RRState = RRState
-    { rrHosts :: HostMap
-    , rrGen   :: GenIO
-    }
-
 -- | Always return the host that first became available.
 constant :: HostMap -> IO Policy
 constant _ = do
     r <- newIORef Nothing
-    return $ Policy unit (insert r) (readIORef r)
+    return $ Policy unit (ins r) (readIORef r)
   where
-    insert r h = atomicModifyIORef' r $ maybe (Just h, ()) ((, ()) . Just)
+    ins r h = atomicModifyIORef' r $ maybe (Just h, ()) ((, ()) . Just)
+
+-- | Iterate over all hosts.
+roundRobin :: HostMap -> IO Policy
+roundRobin hh = do
+    ctr <- newIORef 0
+    return $ Policy (onEvent hh) (insert hh) (pickHost ctr)
+  where
+    pickHost ctr = do
+        m <- Map.filter (view alive) <$> readIORef hh
+        i <- atomicModifyIORef' ctr $ \k ->
+                if k < Map.size m - 1
+                    then (succ k, k)
+                    else (0, k)
+        if i < Map.size m
+            then return . Just . snd $ Map.elemAt i m
+            else return Nothing
 
 -- | Return hosts randomly.
 random :: HostMap -> IO Policy
 random hh = do
-    state <- RRState hh <$> createSystemRandom
-    return $ Policy (onEvent state) (insert state) (pickHost state)
+    gen <- createSystemRandom
+    return $ Policy (onEvent hh) (insert hh) (pickHost gen)
   where
-    onEvent :: RRState -> HostEvent -> IO ()
-    onEvent rr (HostAdded   h) = withMap rr (Map.insert (h^.hostAddr) h)
-    onEvent rr (HostRemoved s) = withMap rr (Map.delete s)
-    onEvent rr (HostUp      s) = withMap rr (Map.adjust (set alive True) s)
-    onEvent rr (HostDown    s) = withMap rr (Map.adjust (set alive False) s)
-
-    insert :: RRState -> Host -> IO ()
-    insert rr h = withMap rr (Map.alter insertIfAbsent (h^.hostAddr))
-      where
-        insertIfAbsent Nothing = Just h
-        insertIfAbsent other   = other
-
-    pickHost :: RRState -> IO (Maybe Host)
-    pickHost rr = do
-        h <- Map.filter (view alive) <$> readIORef (rrHosts rr)
-        let pickRandom = uniformR (0, Map.size h - 1) (rrGen rr)
+    pickHost gen = do
+        h <- Map.filter (view alive) <$> readIORef hh
+        let pickRandom = uniformR (0, Map.size h - 1) gen
         if Map.null h
             then return Nothing
             else Just . snd . flip Map.elemAt h <$> pickRandom
 
-withMap :: RRState -> (Map SockAddr Host -> Map SockAddr Host) -> IO ()
-withMap s f = atomicModifyIORef' (rrHosts s) $ \m -> (f m, ())
+onEvent :: HostMap -> HostEvent -> IO ()
+onEvent r (HostAdded   h) = withMap r (Map.insert (h^.hostAddr) h)
+onEvent r (HostRemoved s) = withMap r (Map.delete s)
+onEvent r (HostUp      s) = withMap r (Map.adjust (set alive True) s)
+onEvent r (HostDown    s) = withMap r (Map.adjust (set alive False) s)
+
+insert :: HostMap -> Host -> IO ()
+insert hh h = withMap hh (Map.alter insertIfAbsent (h^.hostAddr))
+  where
+    insertIfAbsent Nothing = Just h
+    insertIfAbsent other   = other
+
+withMap :: HostMap -> (Map SockAddr Host -> Map SockAddr Host) -> IO ()
+withMap s f = atomicModifyIORef' s $ \m -> (f m, ())

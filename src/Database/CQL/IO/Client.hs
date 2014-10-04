@@ -47,9 +47,6 @@ import qualified Data.Map.Strict            as Map
 import qualified Database.CQL.IO.Connection as C
 import qualified Database.CQL.IO.Timeouts   as TM
 
------------------------------------------------------------------------------
--- API
-
 data ClientState = ClientState
     { _settings   :: Settings
     , _logger     :: Logger
@@ -164,9 +161,6 @@ onConnectionError h exc = do
 
 allEventTypes :: [EventType]
 allEventTypes = [TopologyChangeEvent, StatusChangeEvent, SchemaChangeEvent]
-
------------------------------------------------------------------------------
--- Internal
 
 initialise :: Logger -> Settings -> TimeoutManager -> Policy -> Connection -> IO ()
 initialise g s t p c = do
