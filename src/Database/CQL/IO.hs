@@ -24,7 +24,7 @@ module Database.CQL.IO
     , setPolicy
 
     , Client
-    , State
+    , ClientState
     , runClient
     , Database.CQL.IO.Client.init
     , shutdown

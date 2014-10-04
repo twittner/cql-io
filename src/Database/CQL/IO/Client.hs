@@ -9,7 +9,7 @@
 
 module Database.CQL.IO.Client
     ( Client
-    , State
+    , ClientState
     , runClient
     , Database.CQL.IO.Client.init
     , shutdown
@@ -39,7 +39,7 @@ import Database.CQL.IO.Settings
 import Database.CQL.IO.Timeouts (TimeoutManager)
 import Database.CQL.IO.Types
 import Database.CQL.Protocol hiding (Map)
-import Network.Socket (SockAddr (..), PortNumber (..))
+import Network.Socket (SockAddr (..))
 import System.Logger hiding (Settings, settings, create)
 
 import qualified Data.List.NonEmpty         as NE
@@ -50,31 +50,21 @@ import qualified Database.CQL.IO.Timeouts   as TM
 -----------------------------------------------------------------------------
 -- API
 
-data State = State
-    { _env     :: Env
-    , _control :: Control
-    }
-
-data Env = Env
-    { _settings :: Settings
-    , _logger   :: Logger
-    , _timeouts :: TimeoutManager
-    , _lbPolicy :: Policy
-    }
-
-data Control = Control
-    { _token      :: MVar ()
+data ClientState = ClientState
+    { _settings   :: Settings
+    , _logger     :: Logger
+    , _timeouts   :: TimeoutManager
+    , _lbPolicy   :: Policy
     , _connection :: IORef Connection
     , _failures   :: IORef Word64
     , _hosts      :: IORef (Map SockAddr Host)
+    , _mutex      :: MVar ()
     }
 
-makeLenses ''Env
-makeLenses ''Control
-makeLenses ''State
+makeLenses ''ClientState
 
 newtype Client a = Client
-    { client :: ReaderT State IO a
+    { client :: ReaderT ClientState IO a
     } deriving ( Functor
                , Applicative
                , Monad
@@ -82,63 +72,54 @@ newtype Client a = Client
                , MonadThrow
                , MonadMask
                , MonadCatch
-               , MonadReader State
+               , MonadReader ClientState
                )
 
-init :: Logger -> Settings -> IO State
-init g s = do
+init :: MonadIO m => Logger -> Settings -> m ClientState
+init g s = liftIO $ do
     t <- TM.create 250
+    c <- tryAll (s^.contacts) (mkConnection t) `onException` TM.destroy t True
     h <- newIORef Map.empty
-    e <- Env s g t <$> view policy s h
-    c <- tryAll (s^.contacts) (mkConnection e)
-    initialise e c
-    State e <$>  mkControl c h
+    p <- s^.policy $ h
+    initialise g s t p c
+    ClientState s g t p <$> newIORef c <*> newIORef 0 <*> pure h <*> newMVar ()
   where
-    mkConnection e h = do
+    mkConnection t h = do
         a <- C.resolve h (s^.portnumber)
-        C.connect (s^.connSettings) (e^.timeouts) (s^.protoVersion) g a (eventHandler e)
+        C.connect (s^.connSettings) t (s^.protoVersion) g a
 
-    mkControl c h = liftIO $
-        Control <$> newMVar ()
-                <*> newIORef c
-                <*> newIORef 0
-                <*> pure h
-
-shutdown :: MonadIO m => State -> m ()
+shutdown :: MonadIO m => ClientState -> m ()
 shutdown s = liftIO $ do
-    c <- readIORef (s^.control.connection)
-    h <- readIORef (s^.control.hosts)
-    C.close c
-    TM.destroy (s^.env.timeouts) True
-    mapM_ (destroy . view pool) (Map.elems h)
+    TM.destroy (s^.timeouts) True
+    C.close =<< readIORef (s^.connection)
+    mapM_ (destroy . view pool) . Map.elems =<< readIORef (s^.hosts)
 
-runClient :: MonadIO m => State -> Client a -> m a
+runClient :: MonadIO m => ClientState -> Client a -> m a
 runClient p a = liftIO $ runReaderT (client a) p
 
 request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
 request a = do
     s <- ask
     h <- pickHost
-    let p = h^.pool
-    action s p `catches` handlers h
+    action s (h^.pool) `catches` handlers h
   where
-    action s p = case s^.env.settings.maxWaitQueue of
+    action s p = case s^.settings.maxWaitQueue of
         Nothing -> liftIO $ with p (transaction s)
         Just  q -> liftIO $ tryWith p (go s) >>= maybe (retry s q p) return
 
     go s h = do
-        atomicModifyIORef' (s^.control.failures) $ \n -> (if n > 0 then n - 1 else 0, ())
+        atomicModifyIORef' (s^.failures) $ \n -> (if n > 0 then n - 1 else 0, ())
         transaction s h
 
     retry s q p = do
-        k <- atomicModifyIORef' (s^.control.failures) $ \n -> (n + 1, n)
+        k <- atomicModifyIORef' (s^.failures) $ \n -> (n + 1, n)
         unless (k < q) $
             throwM ConnectionsBusy
         with p (go s)
 
     transaction s c = do
-        let x = s^.env.settings.connSettings.compression
-        let v = s^.env.settings.protoVersion
+        let x = s^.settings.connSettings.compression
+        let v = s^.settings.protoVersion
         r <- parse x <$> C.request c (serialise v x a)
         r `seq` return r
 
@@ -147,32 +128,37 @@ request a = do
         , Handler $ \(e :: IOException)     -> onConnectionError h e >> throwM e
         ]
 
+    pickHost = do
+        p <- view lbPolicy
+        h <- liftIO $ getHost p
+        maybe (throwM NoHostAvailable) return h
+
 command :: Request k () () -> Client ()
 command = void . request
 
 onConnectionError :: Exception e => Host -> e -> Client ()
 onConnectionError h exc = do
-    s <- ask
-    let c = s^.control.connection
-    let m = s^.control.token
-    warn (s^.env.logger) $ "exception" .= show exc
+    e <- ask
+    let c = e^.connection
+    let m = e^.mutex
+    warn (e^.logger) $ "exception" .= show exc
     liftIO $ void $ tryWithMVar m $ const $ do
         x <- readIORef c
         when (x^.address == h^.hostAddr) $ do
-            handler (s^.env.lbPolicy) $ HostDown (h^.hostAddr)
             C.close x
-            a <- NE.nonEmpty . Map.keys <$> readIORef (s^.control.hosts)
-            maybe (report s) (`tryAll` replaceConn s c) a
+            handler (e^.lbPolicy) $ HostDown (h^.hostAddr)
+            a <- NE.nonEmpty . Map.keys <$> readIORef (e^.hosts)
+            maybe (report e) (`tryAll` replaceConn e c) a
   where
-    report s = err (s^.env.logger) $ "error-handler" .= val "no host available"
+    report e = err (e^.logger) $ "error-handler" .= val "no host available"
 
     replaceConn e r a = do
-        let g = e^.env.logger
-        let s = e^.env.settings
+        let g = e^.logger
+        let s = e^.settings
         let i = show (sockAddr2IP a)
-        c <- C.connect (s^.connSettings) (e^.env.timeouts) (s^.protoVersion) g a (eventHandler (e^.env))
+        c <- C.connect (s^.connSettings) (e^.timeouts) (s^.protoVersion) g a
         startup c
-        register c allEventTypes
+        register c allEventTypes (eventHandler g s (e^.timeouts) (e^.lbPolicy))
         writeIORef r c
         info g $ msg (val "new control connection: " +++ i)
 
@@ -182,60 +168,34 @@ allEventTypes = [TopologyChangeEvent, StatusChangeEvent, SchemaChangeEvent]
 -----------------------------------------------------------------------------
 -- Internal
 
-pickHost :: Client Host
-pickHost = do
-    p <- view (env.lbPolicy)
-    h <- liftIO $ getHost p
-    maybe (throwM NoHostAvailable) return h
-
-initialise :: MonadIO m => Env -> Connection -> m ()
-initialise e c = liftIO $ do
+initialise :: Logger -> Settings -> TimeoutManager -> Policy -> Connection -> IO ()
+initialise g s t p c = do
     startup c
     let a = c^.address
     l <- listToMaybe <$> query c One Discovery.local ()
-    p <- discoverPeers e c
-    h <- Host (sockAddr2IP a) a True (view _2 <$> l) (view _3 <$> l) <$> mkPool e a
-    mapM_ (addHost (e^.lbPolicy)) (h:p)
-    register c allEventTypes
-    info (e^.logger) $ msg (val "known hosts: " +++ show (h:p))
+    x <- discoverPeers g s t c
+    h <- Host (sockAddr2IP a) a True (view _2 <$> l) (view _3 <$> l) <$> mkPool g s t a
+    mapM_ (addHost p) (h:x)
+    register c allEventTypes (eventHandler g s t p)
+    info g $ msg (val "known hosts: " +++ show (h:x))
 
-discoverPeers :: MonadIO m => Env -> Connection -> m [Host]
-discoverPeers e c = liftIO $ do
+discoverPeers :: Logger -> Settings -> TimeoutManager -> Connection -> IO [Host]
+discoverPeers g s t c = do
     r <- query c One peers ()
-    mapM (mkHost e) (map asRecord r)
+    mapM mkHost (map asRecord r)
+  where
+    mkHost h = do
+        let p = s^.portnumber
+        let a = ip2SockAddr p (peerRPC h)
+        Host (peerRPC h) a True (Just $ peerDC h) (Just $ peerRack h) <$> mkPool g s t a
 
-eventHandler :: MonadIO m => Env -> Event -> m ()
-eventHandler e x = liftIO $ do
-    info (e^.logger) $ "client.event" .= show x
-    let p = e^.settings.portnumber
-    case x of
-        StatusEvent   Up   sa        -> handler (e^.lbPolicy) (HostUp (mapPort p sa))
-        StatusEvent   Down sa        -> handler (e^.lbPolicy) (HostDown (mapPort p sa))
-        TopologyEvent RemovedNode sa -> handler (e^.lbPolicy) (HostRemoved (mapPort p sa))
-        TopologyEvent NewNode     sa -> do
-            let sa' = mapPort p sa
-            host <- Host (sockAddr2IP sa') sa' True Nothing Nothing <$> mkPool e sa'
-            handler (e^.lbPolicy) (HostAdded host)
-        SchemaEvent   _              -> return ()
-
-mapPort :: PortNumber -> SockAddr -> SockAddr
-mapPort p (SockAddrInet _ a)      = SockAddrInet p a
-mapPort p (SockAddrInet6 _ f a s) = SockAddrInet6 p f a s
-mapPort _ unix                    = unix
-
-mkPool :: MonadIO m => Env -> SockAddr -> m Pool
-mkPool e a = liftIO $ do
-    let g = e^.logger
-    let s = e^.settings.poolSettings
-    let n = e^.settings.connSettings.maxStreams
-    create connOpen connClose g s n
+mkPool :: Logger -> Settings -> TimeoutManager -> SockAddr -> IO Pool
+mkPool g s t a =
+    create connOpen connClose g (s^.poolSettings) (s^.connSettings.maxStreams)
   where
     connOpen = do
-        let lgr = e^.logger
-        let tmg = e^.timeouts
-        let cst = e^.settings.connSettings
-        c <- C.connect cst tmg (e^.settings.protoVersion) lgr a unit
-        debug lgr $
+        c <- C.connect (s^.connSettings) t (s^.protoVersion) g a
+        debug g $
             msg (val "client.connect")
             ~~ "host" .= show (sockAddr2IP a)
             ~~ "conn" .= show c
@@ -244,21 +204,34 @@ mkPool e a = liftIO $ do
 
     connInit con = do
         C.startup con
-        for_ (e^.settings.connSettings.defKeyspace) $
+        for_ (s^.connSettings.defKeyspace) $
             C.useKeyspace con
 
     connClose con = do
-        debug (e^.logger) $
+        debug g $
             msg (val "client.close")
             ~~ "host" .= show (sockAddr2IP a)
             ~~ "conn" .= show con
         C.close con
 
-mkHost :: MonadIO m => Env -> Peer -> m Host
-mkHost e h = liftIO $ do
-    let p = e^.settings.portnumber
-    let a = ip2SockAddr p (peerRPC h)
-    Host (peerRPC h) a True (Just $ peerDC h) (Just $ peerRack h) <$> mkPool e a
+eventHandler :: Logger -> Settings -> TimeoutManager -> Policy -> Event -> IO ()
+eventHandler g s t p x = do
+    info g $ "client.event" .= show x
+    case x of
+        StatusEvent   Up   sa        -> handler p (HostUp (mapPort (s^.portnumber) sa))
+        StatusEvent   Down sa        -> handler p (HostDown (mapPort (s^.portnumber) sa))
+        TopologyEvent RemovedNode sa -> handler p (HostRemoved (mapPort (s^.portnumber) sa))
+        TopologyEvent NewNode     sa -> do
+            let sa' = mapPort (s^.portnumber) sa
+            host <- Host (sockAddr2IP sa') sa' True Nothing Nothing <$> mkPool g s t sa'
+            handler p (HostAdded host)
+        SchemaEvent   _              -> return ()
+  where
+    mapPort i (SockAddrInet _ a)      = SockAddrInet i a
+    mapPort i (SockAddrInet6 _ f a b) = SockAddrInet6 i f a b
+    mapPort _ unix                    = unix
+
+-----------------------------------------------------------------------------
 
 tryAll :: MonadCatch m => NonEmpty a -> (a -> m b) -> m b
 tryAll (a :| []) f = f a

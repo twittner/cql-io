@@ -7,6 +7,7 @@
 module Database.CQL.IO.Cluster.Policies
     ( Policy (..)
     , HostMap
+    , empty
     , random
     , constant
     ) where
@@ -15,7 +16,6 @@ import Control.Applicative
 import Control.Lens ((^.), set, view)
 import Data.IORef
 import Data.Map.Strict (Map)
-import Data.Maybe (listToMaybe)
 import Database.CQL.IO.Cluster.Host
 import Database.CQL.IO.Types (unit)
 import Network.Socket (SockAddr)
@@ -33,13 +33,13 @@ data Policy = Policy
 
 data RRState = RRState
     { rrHosts :: HostMap
-    , rrGen   :: !GenIO
+    , rrGen   :: GenIO
     }
 
--- | Always return the same host.
+-- | Always return the host that first became available.
 constant :: HostMap -> IO Policy
-constant m = do
-    r <- newIORef =<< listToMaybe . Map.elems <$> readIORef m
+constant _ = do
+    r <- newIORef Nothing
     return $ Policy unit (insert r) (readIORef r)
   where
     insert r h = atomicModifyIORef' r $ maybe (Just h, ()) ((, ()) . Just)

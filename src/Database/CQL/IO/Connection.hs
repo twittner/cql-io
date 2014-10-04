@@ -20,6 +20,7 @@ module Database.CQL.IO.Connection
     , useKeyspace
     , address
     , protocol
+    , eventSig
     , ip2SockAddr
     , sockAddr2IP
 
@@ -53,6 +54,7 @@ import Data.Vector (Vector, (!))
 import Database.CQL.Protocol
 import Database.CQL.IO.Hexdump
 import Database.CQL.IO.Protocol
+import Database.CQL.IO.Signal hiding (connect)
 import Database.CQL.IO.Sync (Sync)
 import Database.CQL.IO.Types
 import Database.CQL.IO.Tickets (Pool, toInt, markAvailable)
@@ -85,17 +87,18 @@ data ConnectionSettings = ConnectionSettings
 type Streams = Vector (Sync (Header, ByteString))
 
 data Connection = Connection
-    { _settings :: !ConnectionSettings
-    , _address  :: !SockAddr
-    , _tmanager :: !TimeoutManager
-    , _protocol :: !Version
-    , _sock     :: !Socket
-    , _streams  :: !Streams
+    { _settings :: ConnectionSettings
+    , _address  :: SockAddr
+    , _tmanager :: TimeoutManager
+    , _protocol :: Version
+    , _sock     :: Socket
+    , _streams  :: Streams
     , _wLock    :: MVar ()
     , _reader   :: Async ()
-    , _tickets  :: !Pool
-    , _logger   :: !Logger
-    , _ident    :: !Unique
+    , _tickets  :: Pool
+    , _logger   :: Logger
+    , _eventSig :: Signal Event
+    , _ident    :: Unique
     }
 
 makeLenses ''ConnectionSettings
@@ -122,8 +125,8 @@ resolve host port =
   where
     hints = defaultHints { addrFlags = [AI_ADDRCONFIG], addrSocketType = Stream }
 
-connect :: ConnectionSettings -> TimeoutManager -> Version -> Logger -> SockAddr -> EventHandler -> IO Connection
-connect t m v g a f =
+connect :: ConnectionSettings -> TimeoutManager -> Version -> Logger -> SockAddr -> IO Connection
+connect t m v g a =
     bracketOnError mkSock S.close $ \s -> do
         ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s a)
         unless (isJust ok) $
@@ -137,15 +140,16 @@ connect t m v g a f =
         tck <- Tickets.pool (t^.maxStreams)
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
         lck <- newMVar ()
-        rdr <- async (runReader v g (t^.compression) f tck s syn)
-        Connection t a m v s syn lck rdr tck g <$> newUnique
+        sig <- signal
+        rdr <- async (runReader v g (t^.compression) tck s syn sig)
+        Connection t a m v s syn lck rdr tck g sig <$> newUnique
 
     familyOf (SockAddrInet  {..}) = AF_INET
     familyOf (SockAddrInet6 {..}) = AF_INET6
     familyOf (SockAddrUnix  {..}) = AF_UNIX
 
-runReader :: Version -> Logger -> Compression -> EventHandler -> Pool -> Socket -> Streams -> IO ()
-runReader v g cmp fn tck sck syn = run `finally` cleanup
+runReader :: Version -> Logger -> Compression -> Pool -> Socket -> Streams -> Signal Event -> IO ()
+runReader v g cmp tck sck syn s = run `finally` cleanup
   where
     run = forever $ do
         x <- readSocket v g sck
@@ -153,7 +157,7 @@ runReader v g cmp fn tck sck syn = run `finally` cleanup
             -1 ->
                 case parse cmp x :: Response () () () of
                     RsError _ e -> throwM e
-                    RsEvent _ e -> fn e
+                    RsEvent _ e -> emit s e
                     r           -> throwM (UnexpectedResponse' r)
             sid -> do
                 ok <- Sync.put (syn ! sid) x
@@ -239,13 +243,13 @@ startup c = do
     res <- request c enc
     (parse cmp res :: Response () () ()) `seq` return ()
 
-register :: Connection -> [EventType] -> IO ()
-register c e = do
+register :: Connection -> [EventType] -> EventHandler -> IO ()
+register c e f = do
     let req = RqRegister (Register e) :: Request () () ()
     let enc = serialise (c^.protocol) (c^.settings.compression) req
     res <- request c enc
     case parse (c^.settings.compression) res :: Response () () () of
-        RsReady _ Ready -> return ()
+        RsReady _ Ready -> c^.eventSig |-> f
         other           -> throwM (UnexpectedResponse' other)
 
 validateSettings :: Connection -> IO ()

@@ -38,6 +38,7 @@ library
         Database.CQL.IO.Pool
         Database.CQL.IO.Protocol
         Database.CQL.IO.Settings
+        Database.CQL.IO.Signal
         Database.CQL.IO.Sync
         Database.CQL.IO.Tickets
         Database.CQL.IO.Timeouts
