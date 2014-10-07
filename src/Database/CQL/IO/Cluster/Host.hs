@@ -8,25 +8,34 @@ module Database.CQL.IO.Cluster.Host where
 
 import Control.Lens (makeLenses, (^.))
 import Data.IP
+import Data.IORef
 import Data.List (intercalate)
 import Data.Text (Text, unpack)
 import Database.CQL.IO.Pool
 import Network.Socket (SockAddr)
 
+data HostStatus
+    = Alive
+    | Dead
+    | Unreachable
+    deriving (Eq, Ord, Show)
+
 data Host = Host
     { _inetAddr   :: !IP
     , _hostAddr   :: !SockAddr
-    , _alive      :: !Bool
-    , _dataCentre :: (Maybe Text)
-    , _rack       :: (Maybe Text)
+    , _status     :: !(IORef HostStatus)
+    , _dataCentre :: !Text
+    , _rack       :: !Text
     , _pool       :: !Pool
     }
 
 data HostEvent
-    = HostAdded   !Host
-    | HostRemoved !SockAddr
-    | HostUp      !SockAddr
-    | HostDown    !SockAddr
+    = HostAdded       !Host
+    | HostRemoved     !SockAddr
+    | HostUp          !SockAddr
+    | HostDown        !SockAddr
+    | HostUnreachable !SockAddr
+    | HostReachable   !SockAddr
 
 data Distance
     = Local
@@ -38,7 +47,13 @@ makeLenses ''Host
 
 instance Show Host where
     show h = intercalate ":"
-           [ maybe "" unpack (h^.dataCentre)
-           , maybe "" unpack (h^.rack)
+           [ unpack (h^.dataCentre)
+           , unpack (h^.rack)
            , show (h^.inetAddr)
            ]
+
+instance Eq Host where
+    a == b = a^.inetAddr == b^.inetAddr
+
+instance Ord Host where
+    a `compare` b = (a^.inetAddr) `compare` (b^.inetAddr)

@@ -29,6 +29,7 @@ library
         Database.CQL.IO
 
     other-modules:
+        Database.CQL.IO.Cleanups
         Database.CQL.IO.Client
         Database.CQL.IO.Cluster.Discovery
         Database.CQL.IO.Cluster.Host
@@ -58,6 +59,7 @@ library
         , mtl              >= 2.1     && < 2.3
         , mwc-random       >= 0.13    && < 0.14
         , network          >= 2.4     && < 3.0
+        , retry            >= 0.5     && < 0.6
         , semigroups       >= 0.15    && < 0.16
         , stm              >= 2.4     && < 3.0
         , text             >= 0.11    && < 2.0

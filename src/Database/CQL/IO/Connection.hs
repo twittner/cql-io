@@ -11,6 +11,7 @@
 module Database.CQL.IO.Connection
     ( Connection
     , resolve
+    , ping
     , connect
     , close
     , request
@@ -42,11 +43,12 @@ import Control.Exception (throwTo)
 import Control.Lens ((^.), makeLenses, view)
 import Control.Monad
 import Control.Monad.Catch
+import Control.Monad.IO.Class
 import Data.ByteString.Builder
 import Data.ByteString.Lazy (ByteString)
 import Data.Int
 import Data.IP
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, fromMaybe)
 import Data.Monoid
 import Data.Text.Lazy (fromStrict)
 import Data.Unique
@@ -125,9 +127,9 @@ resolve host port =
   where
     hints = defaultHints { addrFlags = [AI_ADDRCONFIG], addrSocketType = Stream }
 
-connect :: ConnectionSettings -> TimeoutManager -> Version -> Logger -> SockAddr -> IO Connection
-connect t m v g a =
-    bracketOnError mkSock S.close $ \s -> do
+connect :: MonadIO m => ConnectionSettings -> TimeoutManager -> Version -> Logger -> SockAddr -> m Connection
+connect t m v g a = liftIO $
+    bracketOnError (mkSock a) S.close $ \s -> do
         ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s a)
         unless (isJust ok) $
             throwM ConnectTimeout
@@ -135,7 +137,6 @@ connect t m v g a =
         validateSettings c
         return c
   where
-    mkSock = socket (familyOf a) Stream defaultProtocol
     open s = do
         tck <- Tickets.pool (t^.maxStreams)
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
@@ -144,9 +145,17 @@ connect t m v g a =
         rdr <- async (runReader v g (t^.compression) tck s syn sig)
         Connection t a m v s syn lck rdr tck g sig <$> newUnique
 
+mkSock :: SockAddr -> IO Socket
+mkSock a = socket (familyOf a) Stream defaultProtocol
+  where
     familyOf (SockAddrInet  {..}) = AF_INET
     familyOf (SockAddrInet6 {..}) = AF_INET6
     familyOf (SockAddrUnix  {..}) = AF_UNIX
+
+ping :: MonadIO m => SockAddr -> m Bool
+ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
+    fromMaybe False <$> timeout 5000000
+        ((S.connect s a >> return True) `catchAll` const (return False))
 
 runReader :: Version -> Logger -> Compression -> Pool -> Socket -> Streams -> Signal Event -> IO ()
 runReader v g cmp tck sck syn s = run `finally` cleanup
@@ -235,16 +244,16 @@ sockAddr2IP _                       = error "sockAddr2IP: not IP4/IP6 address"
 -----------------------------------------------------------------------------
 -- Operations
 
-startup :: Connection -> IO ()
-startup c = do
+startup :: MonadIO m => Connection -> m ()
+startup c = liftIO $ do
     let cmp = c^.settings.compression
     let req = RqStartup (Startup Cqlv300 (algorithm cmp))
     let enc = serialise (c^.protocol) cmp (req :: Request () () ())
     res <- request c enc
     (parse cmp res :: Response () () ()) `seq` return ()
 
-register :: Connection -> [EventType] -> EventHandler -> IO ()
-register c e f = do
+register :: MonadIO m => Connection -> [EventType] -> EventHandler -> m ()
+register c e f = liftIO $ do
     let req = RqRegister (Register e) :: Request () () ()
     let enc = serialise (c^.protocol) (c^.settings.compression) req
     res <- request c enc
@@ -252,23 +261,23 @@ register c e f = do
         RsReady _ Ready -> c^.eventSig |-> f
         other           -> throwM (UnexpectedResponse' other)
 
-validateSettings :: Connection -> IO ()
-validateSettings c = do
+validateSettings :: MonadIO m => Connection -> m ()
+validateSettings c = liftIO $ do
     Supported ca _ <- supportedOptions c
     let x = algorithm (c^.settings.compression)
     unless (x == None || x `elem` ca) $
         throwM $ UnsupportedCompression ca
 
-supportedOptions :: Connection -> IO Supported
-supportedOptions c = do
+supportedOptions :: MonadIO m => Connection -> m Supported
+supportedOptions c = liftIO $ do
     let options = RqOptions Options :: Request () () ()
     res <- request c (serialise (c^.protocol) noCompression options)
     case parse noCompression res :: Response () () () of
         RsSupported _ x -> return x
         other           -> throwM (UnexpectedResponse' other)
 
-useKeyspace :: Connection -> Keyspace -> IO ()
-useKeyspace c ks = do
+useKeyspace :: MonadIO m => Connection -> Keyspace -> m ()
+useKeyspace c ks = liftIO $ do
     let cmp    = c^.settings.compression
         params = QueryParams One False () Nothing Nothing Nothing
         kspace = quoted (fromStrict $ unKeyspace ks)
@@ -278,13 +287,13 @@ useKeyspace c ks = do
         RsResult _ (SetKeyspaceResult _) -> return ()
         other                            -> throwM (UnexpectedResponse' other)
 
-query :: forall k a b . (Tuple a, Tuple b, Show b)
+query :: forall k a b m. (Tuple a, Tuple b, Show b, MonadIO m)
       => Connection
       -> Consistency
       -> QueryString k a b
       -> a
-      -> IO [b]
-query c cons q p = do
+      -> m [b]
+query c cons q p = liftIO $ do
     let req = RqQuery (Query q params) :: Request k a b
     let enc = serialise (c^.protocol) (c^.settings.compression) req
     res <- request c enc
@@ -303,4 +312,3 @@ msg' :: ByteString -> Msg -> Msg
 msg' x = msg $ case nativeNewline of
     LF   -> val "\n"   +++ x
     CRLF -> val "\r\n" +++ x
-
