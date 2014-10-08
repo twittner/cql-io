@@ -2,6 +2,23 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+-- | This cassandra driver is modelled as follows:
+--
+-- We support /n/ hosts, each of which has a pool of at most /k/ connections,
+-- each of which supports up to /i/ concurrent streams.
+--
+-- Additionally we maintain a single control connection to one host which is
+-- registered to receive events such as topology changes from the C* node.
+--
+-- Policies are provided which maintain a single driver-wide set of hosts and
+-- are responsible for host addition/deletion in response to topology change
+-- events as well as host selection on CQL requests. Some policies are for
+-- instance 'random' or 'round-robin'.
+--
+-- The picture is complicated by the fact that the nodes may become
+-- unavailable without notification. To mitigate this we do periodic health
+-- checks (i.e. connection attempts) to every host and if necessary keep
+-- trying to reconnect.
 module Database.CQL.IO
     ( Settings
     , defSettings

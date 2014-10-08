@@ -6,6 +6,7 @@ module Database.CQL.IO.Cleanups
     ( Cleanups
     , new
     , add
+    , remove
     , destroy
     , destroyAll
     ) where
@@ -27,6 +28,10 @@ add :: (MonadIO m, Ord k) => Cleanups k -> k -> IO a -> (a -> IO ()) -> m ()
 add (Cleanups d) k a f = liftIO $ do
     x <- a
     atomically $ modifyTVar d (Map.insert k (f x))
+
+remove :: (MonadIO m, Ord k) => Cleanups k -> k -> m ()
+remove (Cleanups d) k = liftIO $ do
+    atomically $ modifyTVar d (Map.delete k)
 
 destroy :: (MonadIO m, Ord k) => Cleanups k -> k -> m ()
 destroy (Cleanups d) k = liftIO $ do

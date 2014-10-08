@@ -21,6 +21,7 @@ module Database.CQL.IO.Client
 import Control.Applicative
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (async, cancel)
+import Control.Concurrent.STM hiding (retry)
 import Control.Exception (IOException)
 import Control.Lens hiding ((.=))
 import Control.Monad.Catch
@@ -100,7 +101,7 @@ init :: MonadIO m => Logger -> Settings -> m ClientState
 init g s = liftIO $ do
     t <- TM.create 250
     c <- tryAll (s^.contacts) (mkConnection t) `onException` TM.destroy t True
-    h <- newIORef (Hosts Map.empty Map.empty)
+    h <- newTVarIO (Hosts Map.empty Map.empty)
     p <- s^.policy $ h
     x <- ClientState s g t p
             <$> newIORef (Control Connected c)
@@ -121,7 +122,7 @@ shutdown s = liftIO $ do
     TM.destroy (s^.timeouts) True
     Cleanups.destroyAll (s^.cleanups)
     ignore $ C.close . view connection =<< readIORef (s^.control)
-    hm <- readIORef (s^.hosts)
+    hm <- readTVarIO (s^.hosts)
     mapM_ (destroy . view pool) $ Map.elems (hm^.alive)
     mapM_ (destroy . view pool) $ Map.elems (hm^.other)
 
@@ -132,6 +133,7 @@ request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
 request a = do
     s <- ask
     h <- pickHost
+    trace $ msg (val "selected host: " +++ show h)
     action s (h^.pool) `catches` handlers h
   where
     action s p = case s^.settings.maxWaitQueue of
@@ -169,35 +171,41 @@ command = void . request
 
 showNodes :: Client [(String, HostStatus)]
 showNodes = do
-    m <- view hosts >>= liftIO . readIORef
-    (++) <$> showMap (m^.alive) <*> showMap (m^.other)
+    hh <- view hosts
+    liftIO $ atomically $ do
+        m <- readTVar hh
+        (++) <$> showMap (m^.alive) <*> showMap (m^.other)
   where
     showMap m = forM (Map.elems m) $ \h -> do
-        s <- liftIO $ readIORef (h^.status)
+        s <- readTVar (h^.status)
         return (show h, s)
 
 onConnectionError :: Exception e => Host -> e -> Client ()
 onConnectionError h exc = do
     e <- ask
     warn $ "exception" .= show exc
-    liftIO $ mask_ $ do
-        conn <- atomicModifyIORef' (e^.control) $ \ctrl ->
+    mask_ $ do
+        conn <- liftIO $ atomicModifyIORef' (e^.control) $ \ctrl ->
             if ctrl^.state == Connected && ctrl^.connection.address == h^.hostAddr
                 then (set state Reconnecting ctrl, Just (ctrl^.connection))
                 else (ctrl, Nothing)
-        maybe (handler (e^.lbPolicy) $ HostUnreachable (h^.hostAddr))
-              (void . async . recovering reconnectPolicy reconnectHandlers . continue e)
+        maybe (return ())
+              (liftIO . void . async . recovering reconnectPolicy reconnectHandlers . continue e)
               conn
+        monitor h
   where
     continue e conn = do
         ignore $ C.close conn
         ignore $ handler (e^.lbPolicy) $ HostUnreachable (h^.hostAddr)
-        a <- NE.nonEmpty . Map.keys . view alive <$> readIORef (e^.hosts)
-        case a of
-            Nothing -> do
+        m <- readTVarIO (e^.hosts)
+        let a = NE.nonEmpty . Map.keys $ view alive m
+        let o = NE.nonEmpty . Map.keys $ view other m
+        case (a, o) of
+            (Nothing, Just o') -> o' `tryAll` (runClient e . replaceControl) `onException` reconnect e o'
+            (Just a',       _) -> a' `tryAll` (runClient e . replaceControl) `onException` reconnect e a'
+            (Nothing, Nothing) -> do
                 atomicModifyIORef' (e^.control) $ \ctrl -> (set state Disconnected ctrl, ())
                 Logger.fatal (e^.logger) $ "error-handler" .= val "no host available"
-            Just sa -> sa `tryAll` (runClient e . replaceControl) `onException` reconnect e sa
 
     reconnect e a = do
         Logger.info (e^.logger) $ msg (val "reconnecting ...")
@@ -221,16 +229,46 @@ replaceControl a = do
     startup c
     register c allEventTypes (runClient e . eventHandler)
     p <- discoverPeers c
-    m <- liftIO $ readIORef (e^.hosts)
+    m <- liftIO $ readTVarIO (e^.hosts)
     let known = Set.fromList (Map.elems (m^.alive)) `Set.union` Set.fromList (Map.elems (m^.other))
     let new   = Set.fromList p \\ known
     info $ msg (val "new hosts: " +++ show (Set.toList new))
-    for_ new $ \h -> do
-        liftIO $ addHost (e^.lbPolicy) h
-        monitor h
-    liftIO $ atomicWriteIORef (e^.control) (Control Connected c)
-    liftIO $ handler (e^.lbPolicy) $ HostUp a
-    Logger.info g $ msg (val "new control connection: " +++ show (sockAddr2IP a) +++ val ":" +++ show (s^.portnumber))
+    liftIO $ do
+        for_ new $ addHost (e^.lbPolicy)
+        atomicWriteIORef (e^.control) (Control Connected c)
+        handler (e^.lbPolicy) $ HostUp a
+    info $ msg (val "new control connection: " +++ show (sockAddr2IP a) +++ val ":" +++ show (s^.portnumber))
+    dead <- liftIO $ atomically $ filterM reviveTheDead (Set.toList known)
+    mapM_ monitor dead
+  where
+    reviveTheDead h = do
+        s <- readTVar (h^.status)
+        if s == Dead
+            then writeTVar (h^.status) Unreachable >> return True
+            else return False
+
+monitor :: Host -> Client ()
+monitor h = do
+    ok <- setChecked h $ \ck -> if ck then (ck, False) else (True, True)
+    when ok $ do
+        e <- ask
+        let action = hostCheck 0 50000 `finally` setChecked h (const (False, ()))
+        Cleanups.add (e^.cleanups) (h^.hostAddr) (async (runClient e action)) cancel
+  where
+    hostCheck :: Int -> Int -> Client ()
+    hostCheck n b = do
+        hostStatus <- liftIO $ threadDelay (2^n * b) >> readTVarIO (h^.status)
+        unless (hostStatus == Dead) $ do
+            isUp <- C.ping (h^.hostAddr)
+            if isUp
+                then do
+                    info $ msg (val "reachable again: " +++ show h)
+                    view lbPolicy >>= liftIO . flip handler (HostReachable (h^.hostAddr))
+                    view cleanups >>= \c -> Cleanups.remove c (h^.hostAddr)
+                else do
+                    info $ msg (val "unreachable: " +++ show h)
+                    view lbPolicy >>= liftIO . flip handler (HostUnreachable (h^.hostAddr))
+                    hostCheck (min (succ n) 9) 50000
 
 allEventTypes :: [EventType]
 allEventTypes = [TopologyChangeEvent, StatusChangeEvent, SchemaChangeEvent]
@@ -244,7 +282,6 @@ initialise c = do
     h <- mkHost (fromMaybe "" $ view _2 <$> l) (fromMaybe "" $ view _3 <$> l) (sockAddr2IP a) a
     p <- view lbPolicy
     liftIO $ mapM_ (addHost p) (h:x)
-    mapM_ monitor (h:x)
     s <- ask
     register c allEventTypes (runClient s . eventHandler)
     info $ msg (val "known hosts: " +++ show (h:x))
@@ -263,38 +300,12 @@ mkHost :: Text -> Text -> IP -> SockAddr -> Client Host
 mkHost dc rk ip a = do
     b <- liftIO (C.ping a)
     let hostState t = if t then Alive else Unreachable
-    Host ip a <$> liftIO (newIORef (hostState b)) <*> pure dc <*> pure rk <*> mkPool a
-
-monitor :: Host -> Client ()
-monitor h = do
-    e <- ask
-    Cleanups.add (e^.cleanups) (h^.hostAddr) (async (runClient e (hostCheck h 0 15000000))) cancel
-
-hostCheck :: Host -> Int -> Int -> Client ()
-hostCheck h n b = do
-    hostStatus <- liftIO $ threadDelay (2^n * b) >> readIORef (h^.status)
-    if hostStatus /= Dead
-        then do
-            isUp <- C.ping (h^.hostAddr)
-            debug $ msg (show h +++ val " [" +++ show hostStatus +++ val "]: " +++ show isUp)
-            case isUp of
-                True | hostStatus == Unreachable -> do
-                    debug $ msg (val "reachable again: " +++ show h)
-                    view lbPolicy >>= liftIO . flip handler (HostReachable (h^.hostAddr))
-                    hostCheck h 0 15000000
-                True  -> hostCheck h 0 15000000
-                False -> do
-                    debug $ msg (val "unreachable: " +++ show h)
-                    ctrl <- view control >>= liftIO . readIORef
-                    when (n == 3 && ctrl^.connection.address == h^.hostAddr) $
-                        onConnectionError h (userError "control connection host unreachable")
-                    view lbPolicy >>= liftIO . flip handler (HostUnreachable (h^.hostAddr))
-                    hostCheck h (min (succ n) 6) 500000
-        else do
-            ctrl <- view control >>= liftIO . readIORef
-            when (ctrl^.connection.address == h^.hostAddr) $
-                onConnectionError h (userError "control connection host unreachable")
-            hostCheck h (min (succ n) 3) 30000000
+    Host ip a
+        <$> liftIO (newTVarIO (hostState b))
+        <*> liftIO (newTVarIO False)
+        <*> pure dc
+        <*> pure rk
+        <*> mkPool a
 
 mkPool :: SockAddr -> Client Pool
 mkPool a = do
@@ -343,7 +354,6 @@ eventHandler x = do
         TopologyEvent NewNode     sa -> do
             let sa' = mapPort (s^.portnumber) sa
             host <- mkHost "" "" (sockAddr2IP sa') sa'
-            monitor host
             liftIO $ handler p (HostAdded host)
         SchemaEvent   _              -> return ()
   where
