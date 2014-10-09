@@ -10,20 +10,20 @@ module Database.CQL.IO.Signal
     , (|->)
     ) where
 
+import Control.Concurrent.STM
 import Control.Applicative
-import Data.IORef
 
-newtype Signal a = Sig (IORef [a -> IO ()])
+newtype Signal a = Sig (TVar [a -> IO ()])
 
 signal :: IO (Signal a)
-signal = Sig <$> newIORef []
+signal = Sig <$> newTVarIO []
 
 connect :: Signal a -> (a -> IO ()) -> IO ()
-connect (Sig s) f = atomicModifyIORef' s $ \x -> (f:x, ())
+connect (Sig s) f = atomically $ modifyTVar s (f:)
 
 infixl 2 |->
 (|->) :: Signal a -> (a -> IO ()) -> IO ()
 (|->) = connect
 
 emit :: Signal a -> a -> IO ()
-emit (Sig s) a = readIORef s >>= mapM_ ($ a)
+emit (Sig s) a = readTVarIO s >>= mapM_ ($ a)

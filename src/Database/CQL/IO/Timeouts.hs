@@ -14,10 +14,10 @@ module Database.CQL.IO.Timeouts
     ) where
 
 import Control.Applicative
+import Control.Concurrent.STM
 import Control.Exception (mask_, bracket)
 import Control.Reaper
 import Control.Monad
-import Data.IORef
 import Database.CQL.IO.Types (Milliseconds (..), ignore)
 
 data TimeoutManager = TimeoutManager
@@ -27,7 +27,7 @@ data TimeoutManager = TimeoutManager
 
 data Action = Action
     { action :: IO ()
-    , state  :: IORef State
+    , state  :: TVar State
     }
 
 data State = Running !Int | Canceled
@@ -39,7 +39,10 @@ create (Ms n) = TimeoutManager n <$> mkReaper defaultReaperSettings
     }
   where
     prune a = do
-        s <- atomicModifyIORef' (state a) $ \x -> (newState x, x)
+        s <- atomically $ do
+            x <- readTVar (state a)
+            writeTVar (state a) (newState x)
+            return x
         case s of
             Running 0 -> do
                 ignore (action a)
@@ -58,12 +61,12 @@ destroy tm exec = mask_ $ do
 
 add :: TimeoutManager -> Milliseconds -> IO () -> IO Action
 add tm (Ms n) a = do
-    r <- Action a <$> newIORef (Running $ n `div` roundtrip tm)
+    r <- Action a <$> newTVarIO (Running $ n `div` roundtrip tm)
     reaperAdd (reaper tm) r
     return r
 
 cancel :: Action -> IO ()
-cancel a = atomicWriteIORef (state a) Canceled
+cancel a = atomically $ writeTVar (state a) Canceled
 
 withTimeout :: TimeoutManager -> Milliseconds -> IO () -> IO a -> IO a
 withTimeout tm m x a = bracket (add tm m x) cancel $ const a
