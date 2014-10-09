@@ -6,6 +6,7 @@ module Database.CQL.IO.Cleanups
     ( Cleanups
     , new
     , add
+    , keys
     , remove
     , destroy
     , destroyAll
@@ -24,17 +25,17 @@ newtype Cleanups k = Cleanups (TVar (Map k (IO ())))
 new :: MonadIO m => m (Cleanups k)
 new = liftIO $ Cleanups <$> newTVarIO Map.empty
 
-add :: (MonadIO m, Ord k) => Cleanups k -> k -> IO a -> (a -> IO ()) -> m ()
-add (Cleanups d) k a f = liftIO $ do
+add :: (MonadIO m, Ord k) => k -> IO a -> (a -> IO ()) -> Cleanups k -> m ()
+add k a f (Cleanups d) = liftIO $ do
     x <- a
     atomically $ modifyTVar d (Map.insert k (f x))
 
-remove :: (MonadIO m, Ord k) => Cleanups k -> k -> m ()
-remove (Cleanups d) k = liftIO $ do
+remove :: (MonadIO m, Ord k) => k -> Cleanups k -> m ()
+remove k (Cleanups d) = liftIO $ do
     atomically $ modifyTVar d (Map.delete k)
 
-destroy :: (MonadIO m, Ord k) => Cleanups k -> k -> m ()
-destroy (Cleanups d) k = liftIO $ do
+destroy :: (MonadIO m, Ord k) => k -> Cleanups k -> m ()
+destroy k (Cleanups d) = liftIO $ do
     fn <- atomically $ do
         m <- readTVar d
         case Map.lookup k m of
@@ -46,3 +47,6 @@ destroyAll :: MonadIO m => Cleanups k -> m ()
 destroyAll (Cleanups d) = liftIO $ do
     items <- Map.elems <$> atomically (swapTVar d Map.empty)
     mapM_ ignore items
+
+keys :: MonadIO m => Cleanups k -> m [k]
+keys (Cleanups d) = liftIO $ Map.keys <$> readTVarIO d

@@ -45,6 +45,8 @@ module Database.CQL.IO
     , runClient
     , Database.CQL.IO.Client.init
     , shutdown
+    , showHosts
+    , runningChecks
 
     , Policy
     , random
