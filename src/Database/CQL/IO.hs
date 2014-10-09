@@ -50,7 +50,7 @@ module Database.CQL.IO
 
     , Policy
     , random
-    , constant
+    , roundRobin
 
     , query
     , write

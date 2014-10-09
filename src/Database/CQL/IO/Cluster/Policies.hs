@@ -10,7 +10,6 @@ module Database.CQL.IO.Cluster.Policies
     , handler_
     , random
     , roundRobin
-    , constant
     ) where
 
 import Control.Applicative
@@ -46,19 +45,6 @@ data Policy = Policy
 handler_ :: Policy -> HostEvent -> IO ()
 handler_ p e = handler p e >> return ()
 
--- | Always return the host that first became available.
-constant :: IO Policy
-constant = do
-    r <- newTVarIO Nothing
-    return $ Policy (ins r) (readTVarIO r)
-  where
-    ins r (HostAdded h) = atomically $ do
-        x <- readTVar r
-        case x of
-            Nothing -> writeTVar r (Just h) >> return Accepted
-            _       -> return Ignored
-    ins _ _ = return Ignored
-
 -- | Iterate over all hosts.
 roundRobin :: IO Policy
 roundRobin = do
@@ -68,13 +54,14 @@ roundRobin = do
   where
     pickHost hhh ctr = atomically $ do
         m <- view alive <$> readTVar hhh
-        k <- readTVar ctr
-        writeTVar ctr $ if k < Map.size m - 1 then succ k else 0
-        if k < Map.size m
-            then return . Just . snd $ Map.elemAt k m
-            else return Nothing
+        if Map.null m
+            then return Nothing
+            else do
+                k <- readTVar ctr
+                writeTVar ctr $ if k < Map.size m - 1 then succ k else 0
+                return . Just . snd $ Map.elemAt k m
 
--- | Return hosts randomly.
+-- | Return hosts in random order.
 random :: IO Policy
 random = do
     hhh <- newTVarIO emptyHosts
@@ -82,11 +69,12 @@ random = do
     return $ Policy (onEvent hhh) (pickHost hhh gen)
   where
     pickHost hhh gen = do
-        h <- view alive <$> readTVarIO hhh
-        let pickRandom = uniformR (0, Map.size h - 1) gen
-        if Map.null h
+        m <- view alive <$> readTVarIO hhh
+        if Map.null m
             then return Nothing
-            else Just . snd . flip Map.elemAt h <$> pickRandom
+            else do
+                let i = uniformR (0, Map.size m - 1) gen
+                Just . snd . flip Map.elemAt m <$> i
 
 -----------------------------------------------------------------------------
 -- Defaults
