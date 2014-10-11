@@ -10,52 +10,52 @@
 module Database.CQL.IO.Client
     ( Client
     , ClientState
+    , DebugInfo (..)
     , runClient
     , Database.CQL.IO.Client.init
     , shutdown
     , request
     , command
-    , showHosts
-    , runningChecks
+    , debugInfo
     ) where
 
 import Control.Applicative
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async, cancel)
+import Control.Concurrent.Async (async)
 import Control.Concurrent.STM hiding (retry)
 import Control.Exception (IOException)
-import Control.Lens hiding ((.=))
-import Control.Monad (when, unless, void, filterM)
+import Control.Lens hiding ((.=), Context)
+import Control.Monad (unless, void, when)
 import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Reader (ReaderT, runReaderT, MonadReader, ask)
 import Control.Retry
-import Data.Foldable (for_)
-import Data.IP
+import Data.Foldable (for_, foldrM)
+import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Maybe (fromMaybe, listToMaybe)
-import Data.Set (Set)
+import Data.Map.Strict (Map)
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
-import Data.Traversable (forM)
 import Data.Word
 import Database.CQL.IO.Cluster.Discovery as Discovery
 import Database.CQL.IO.Cluster.Host
 import Database.CQL.IO.Cluster.Policies
 import Database.CQL.IO.Connection hiding (request)
-import Database.CQL.IO.Cleanups (Cleanups)
+import Database.CQL.IO.Jobs (Jobs)
 import Database.CQL.IO.Pool
 import Database.CQL.IO.Protocol
 import Database.CQL.IO.Settings
+import Database.CQL.IO.Signal
 import Database.CQL.IO.Timeouts (TimeoutManager)
 import Database.CQL.IO.Types
-import Database.CQL.Protocol hiding (Set)
-import Network.Socket (SockAddr (..))
+import Database.CQL.Protocol hiding (Map)
+import Network.Socket (SockAddr (..), PortNumber)
 import System.Logger.Class hiding (Settings, new, settings, create)
 
 import qualified Data.List.NonEmpty         as NE
-import qualified Data.Set                   as Set
+import qualified Data.Map.Strict            as Map
 import qualified Database.CQL.IO.Connection as C
-import qualified Database.CQL.IO.Cleanups   as Cleanups
+import qualified Database.CQL.IO.Jobs       as Jobs
 import qualified Database.CQL.IO.Timeouts   as TM
 import qualified System.Logger              as Logger
 
@@ -70,18 +70,24 @@ data Control = Control
     , _connection :: Connection
     }
 
-data ClientState = ClientState
+data Context = Context
     { _settings :: Settings
     , _logger   :: Logger
     , _timeouts :: TimeoutManager
-    , _policy   :: TVar Policy
+    , _sigMonit :: Signal HostEvent
+    }
+
+data ClientState = ClientState
+    { _context  :: Context
+    , _policy   :: Policy
     , _control  :: TVar Control
     , _failures :: TVar Word64
-    , _hosts    :: TVar (Set Host)
-    , _cleanups :: Cleanups SockAddr
+    , _hostmap  :: TVar (Map Host Pool)
+    , _jobs     :: Jobs InetAddr
     }
 
 makeLenses ''Control
+makeLenses ''Context
 makeLenses ''ClientState
 
 newtype Client a = Client
@@ -97,56 +103,24 @@ newtype Client a = Client
                )
 
 instance MonadLogger Client where
-    log l m = view logger >>= \g -> Logger.log g l m
+    log l m = view (context.logger) >>= \g -> Logger.log g l m
 
-init :: MonadIO m => Logger -> Settings -> m ClientState
-init g s = liftIO $ do
-    t <- TM.create 250
-    c <- tryAll (s^.contacts) (mkConnection t) `onException` TM.destroy t True
-    x <- ClientState s g t
-            <$> (newTVarIO =<< s^.policyMaker)
-            <*> newTVarIO (Control Connected c)
-            <*> newTVarIO 0
-            <*> newTVarIO Set.empty
-            <*> Cleanups.new
-    runClient x (initialise c)
-    return x
-  where
-    mkConnection t h = do
-        a <- C.resolve h (s^.portnumber)
-        c <- C.connect (s^.connSettings) t (s^.protoVersion) g a
-        Logger.info g $ msg (val "control connection: " +++ h +++ val ":" +++ show (s^.portnumber))
-        return c
-
-shutdown :: MonadIO m => ClientState -> m ()
-shutdown s = liftIO $ do
-    TM.destroy (s^.timeouts) True
-    Cleanups.destroyAll (s^.cleanups)
-    ignore $ C.close . view connection =<< readTVarIO (s^.control)
-    hm <- readTVarIO (s^.hosts)
-    mapM_ (destroy . view pool) (Set.toList hm)
+-----------------------------------------------------------------------------
+-- API
 
 runClient :: MonadIO m => ClientState -> Client a -> m a
 runClient p a = liftIO $ runReaderT (client a) p
 
-showHosts :: Client [(String, HostStatus)]
-showHosts = do
-    hh <- view hosts >>= liftIO . readTVarIO
-    forM (Set.toList hh) $ \h -> do
-        s <- liftIO $ readTVarIO (h^.status)
-        return (show h, s)
-
-runningChecks :: Client [SockAddr]
-runningChecks = view cleanups >>= Cleanups.keys
-
 request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
 request a = do
     s <- ask
-    h <- pickHost
-    trace $ msg (val "selected host: " +++ show h)
-    action s (h^.pool) `catches` handlers h
+    h <- pickHost (s^.policy)
+    p <- Map.lookup h <$> readTVarIO' (s^.hostmap)
+    case p of
+        Nothing -> error "missing pool"
+        Just  x -> action s x `catches` handlers h
   where
-    action s p = case s^.settings.maxWaitQueue of
+    action s p = case s^.context.settings.maxWaitQueue of
         Nothing -> liftIO $ with p (transaction s)
         Just  q -> liftIO $ tryWith p (go s) >>= maybe (retry s q p) return
 
@@ -165,8 +139,8 @@ request a = do
         with p (go s)
 
     transaction s c = do
-        let x = s^.settings.connSettings.compression
-        let v = s^.settings.protoVersion
+        let x = s^.context.settings.connSettings.compression
+        let v = s^.context.settings.protoVersion
         r <- parse x <$> C.request c (serialise v x a)
         r `seq` return r
 
@@ -175,43 +149,190 @@ request a = do
         , Handler $ \(e :: IOException)     -> onConnectionError h e >> throwM e
         ]
 
-    pickHost = do
-        p <- getPolicy
-        h <- liftIO $ getHost p
-        maybe (throwM NoHostAvailable) return h
+    pickHost p = maybe (throwM NoHostAvailable) return =<< select p
 
 command :: Request k () () -> Client ()
 command = void . request
 
+data DebugInfo = DebugInfo
+    { policyInfo :: String
+    , jobInfo    :: [InetAddr]
+    , hostInfo   :: [Host]
+    }
+
+instance Show DebugInfo where
+    show dbg = showString "running jobs: "
+             . shows (jobInfo dbg)
+             . showString "\nknown hosts: "
+             . shows (hostInfo dbg)
+             . showString "\npolicy info: "
+             . shows (policyInfo dbg)
+             $ ""
+
+debugInfo :: Client DebugInfo
+debugInfo = do
+    hosts <- Map.keys <$> (readTVarIO' =<< view hostmap)
+    pols  <- display =<< view policy
+    jbs   <- Jobs.showJobs =<< view jobs
+    return $ DebugInfo pols jbs hosts
+
+-----------------------------------------------------------------------------
+-- Initialisation
+
+init :: MonadIO m => Logger -> Settings -> m ClientState
+init g s = liftIO $ do
+    t <- TM.create 250
+    c <- tryAll (s^.contacts) (mkConnection t) `onException` TM.destroy t True
+    e <- Context s g t <$> signal
+    p <- s^.policyMaker
+    x <- ClientState e
+            <$> pure p
+            <*> newTVarIO (Control Connected c)
+            <*> newTVarIO 0
+            <*> newTVarIO Map.empty
+            <*> Jobs.new
+    e^.sigMonit |-> onEvent p
+    runClient x (initialise c)
+    return x
+  where
+    mkConnection t h = do
+        a <- C.resolve h (s^.portnumber)
+        c <- C.connect (s^.connSettings) t (s^.protoVersion) g a
+        Logger.info g $ msg (val "control connection: " +++ h +++ val ":" +++ show (s^.portnumber))
+        return c
+
+initialise :: Connection -> Client ()
+initialise c = do
+    startup c
+    env <- ask
+    pol <- view policy
+    ctx <- view context
+    l <- local2Host (c^.address) . listToMaybe <$> query c One Discovery.local ()
+    r <- discoverPeers ctx c
+    (u, d) <- mkHostMap ctx pol (l:r)
+    m <- view hostmap
+    let h = Map.union u d
+    atomically' $ writeTVar m h
+    setup pol (Map.keys u) (Map.keys d)
+    register c allEventTypes (runClient env . onCqlEvent)
+    info $ msg (val "known hosts: " +++ show (Map.keys h))
+    j <- view jobs
+    for_ (Map.keys d) $ \down ->
+        Jobs.add j (down^.hostAddr) $ monitor ctx 1000000 60000000 down
+
+discoverPeers :: MonadIO m => Context -> Connection -> m [Host]
+discoverPeers ctx c = liftIO $ do
+    let p = ctx^.settings.portnumber
+    map (peer2Host p . asRecord) <$> query c One peers ()
+
+mkHostMap :: Context -> Policy -> [Host] -> Client (Map Host Pool, Map Host Pool)
+mkHostMap c p = liftIO . foldrM checkHost (Map.empty, Map.empty)
+  where
+    checkHost h (up, down) = do
+        okay <- acceptable p h
+        if okay then do
+            isUp <- C.ping (h^.hostAddr)
+            if isUp then do
+                up' <- Map.insert h <$> mkPool c (h^.hostAddr) <*> pure up
+                return (up', down)
+            else do
+                down' <- Map.insert h <$> mkPool c (h^.hostAddr) <*> pure down
+                return (up, down')
+        else
+            return (up, down)
+
+mkPool :: MonadIO m => Context -> InetAddr -> m Pool
+mkPool ctx i = liftIO $ do
+    let s = ctx^.settings
+    let m = s^.connSettings.maxStreams
+    create (connOpen s) connClose (ctx^.logger) (s^.poolSettings) m
+  where
+    connOpen s = do
+        let g = ctx^.logger
+        c <- C.connect (s^.connSettings) (ctx^.timeouts) (s^.protoVersion) g i
+        Logger.debug g $
+            msg (val "client.connect") ~~ "host" .= show i ~~ "conn" .= show c
+        connInit c `onException` connClose c
+        return c
+
+    connInit con = do
+        C.startup con
+        for_ (ctx^.settings.connSettings.defKeyspace) $
+            C.useKeyspace con
+
+    connClose con = do
+        Logger.debug (ctx^.logger) $
+            msg (val "client.close") ~~ "host" .= show i ~~ "conn" .= show con
+        C.close con
+
+-----------------------------------------------------------------------------
+-- Termination
+
+shutdown :: MonadIO m => ClientState -> m ()
+shutdown s = liftIO $ do
+    TM.destroy (s^.context.timeouts) True
+    Jobs.destroy (s^.jobs)
+    ignore $ C.close . view connection =<< readTVarIO (s^.control)
+    mapM_ destroy . Map.elems =<< readTVarIO (s^.hostmap)
+
+-----------------------------------------------------------------------------
+-- Monitoring
+
+monitor :: Context -> Int -> Int -> Host -> IO ()
+monitor ctx initial upperBound h = do
+    Logger.info (ctx^.logger) $ msg (val "monitoring: " +++ show h)
+    threadDelay initial
+    hostCheck 0 maxN
+  where
+    hostCheck :: Int -> Int -> IO ()
+    hostCheck n mx = do
+        threadDelay (2^(min n mx) * 50000)
+        isUp <- C.ping (h^.hostAddr)
+        if isUp then do
+            ctx^.sigMonit $$ HostUp (h^.hostAddr)
+            Logger.info (ctx^.logger) $ msg (val "reachable: " +++ show h)
+        else do
+            Logger.info (ctx^.logger) $ msg (val "unreachable: " +++ show h)
+            hostCheck (n + 1) mx
+
+    maxN :: Int
+    maxN = floor . logBase 2 $ (fromIntegral (upperBound `div` 50000) :: Double)
+
+-----------------------------------------------------------------------------
+-- Exception handling
+
 onConnectionError :: Exception e => Host -> e -> Client ()
 onConnectionError h exc = do
-    e <- ask
     warn $ "exception" .= show exc
+    e <- ask
     mask_ $ do
-        conn <- liftIO $ atomically $ do
+        conn <- atomically' $ do
             ctrl <- readTVar (e^.control)
-            if ctrl^.state == Connected && ctrl^.connection.address == h^.hostAddr
-                then do
-                    writeTVar (e^.control) (set state Reconnecting ctrl)
-                    return $ Just (ctrl^.connection)
-                else return Nothing
-        maybe (return ())
+            let a = ctrl^.connection.address
+            if ctrl^.state == Connected && a == h^.hostAddr then do
+                writeTVar (e^.control) (set state Reconnecting ctrl)
+                return $ Just (ctrl^.connection)
+            else
+                return Nothing
+        maybe (liftIO . ignore . onEvent (e^.policy) $ HostDown (h^.hostAddr))
               (liftIO . void . async . recovering reconnectPolicy reconnectHandlers . continue e)
               conn
-        monitor 30000000 h
+        Jobs.add (e^.jobs) (h^.hostAddr) $
+            monitor (e^.context) 0 30000000 h
   where
     continue e conn = do
+        Jobs.destroy (e^.jobs)
         ignore $ C.close conn
-        ignore $ readTVarIO (e^.policy) >>= flip handler_ (HostDown (h^.hostAddr))
-        x <- NE.nonEmpty . map (view hostAddr) . Set.toList <$> readTVarIO (e^.hosts)
+        ignore $ onEvent (e^.policy) (HostDown (h^.hostAddr))
+        x <- NE.nonEmpty . map (view hostAddr) . Map.keys <$> readTVarIO (e^.hostmap)
         case x of
             Just  a -> a `tryAll` (runClient e . replaceControl) `onException` reconnect e a
             Nothing -> do
                 atomically $ modifyTVar (e^.control) (set state Disconnected)
-                Logger.fatal (e^.logger) $ "error-handler" .= val "no host available"
+                Logger.fatal (e^.context.logger) $ "error-handler" .= val "no host available"
 
     reconnect e a = do
-        Logger.info (e^.logger) $ msg (val "reconnecting control ...")
+        Logger.info (e^.context.logger) $ msg (val "reconnecting control ...")
         a `tryAll` (runClient e . replaceControl)
 
     reconnectPolicy = capDelay 5000000 (exponentialBackoff 5000)
@@ -222,144 +343,76 @@ onConnectionError h exc = do
         , const (Handler $ \(_ :: HostError)       -> return True)
         ]
 
-replaceControl :: SockAddr -> Client ()
+replaceControl :: InetAddr -> Client ()
 replaceControl a = do
-    e <- ask
-    let g = e^.logger
-    let s = e^.settings
-    let t = e^.timeouts
-    c <- C.connect (s^.connSettings) t (s^.protoVersion) g a
-    liftIO $ e^.settings.policyMaker >>= atomically . writeTVar (e^.policy)
-    liftIO $ atomically $ writeTVar (e^.control) (Control Connected c)
-    view cleanups >>= Cleanups.destroyAll
+    ctx <- view context
+    ctl <- view control
+    let s = ctx^.settings
+    c <- C.connect (s^.connSettings) (ctx^.timeouts) (s^.protoVersion) (ctx^.logger) a
     initialise c
-    info $ msg (val "new control: " +++ show (sockAddr2IP a) +++ val ":" +++ show (s^.portnumber))
+    atomically' $ writeTVar ctl (Control Connected c)
+    info $ msg (val "new control: " +++ show a +++ val ":" +++ show (s^.portnumber))
 
-monitor :: Int -> Host -> Client ()
-monitor upperBound h = do
-    ok <- setChecked h True
-    when ok $ do
-        e <- ask
-        let action = hostCheck 0 maxN `finally` setChecked h False
-        Cleanups.add (h^.hostAddr) (async (runClient e action)) cancel (e^.cleanups)
-  where
-    hostCheck :: Int -> Int -> Client ()
-    hostCheck n mx = do
-        liftIO $ threadDelay (2^(min n mx) * 50000)
-        isUp <- C.ping (h^.hostAddr)
-        if isUp
-            then do
-                info $ msg (val "reachable: " +++ show h)
-                getPolicy >>= liftIO . flip handler_ (HostUp (h^.hostAddr))
-                view cleanups >>= Cleanups.remove (h^.hostAddr)
-            else do
-                info $ msg (val "unreachable: " +++ show h)
-                getPolicy >>= liftIO . flip handler_ (HostDown (h^.hostAddr))
-                hostCheck (n + 1) mx
-
-    maxN = floor . logBase 2 $ (fromIntegral (upperBound `div` 50000) :: Double)
-
-allEventTypes :: [EventType]
-allEventTypes = [TopologyChangeEvent, StatusChangeEvent, SchemaChangeEvent]
-
-initialise :: Connection -> Client ()
-initialise c = do
-    startup c
-    let a = c^.address
-    l <- listToMaybe <$> query c One Discovery.local ()
-    x <- discoverPeers c
-    h <- mkHost (fromMaybe "" $ view _2 <$> l) (fromMaybe "" $ view _3 <$> l) (sockAddr2IP a) a
-    p <- getPolicy
-    y <- liftIO $ filterM (fmap (Accepted ==) . handler p . HostAdded) (h:x)
-    s <- ask
-    liftIO $ atomically $ writeTVar (s^.hosts) (Set.fromList y)
-    register c allEventTypes (runClient s . eventHandler)
-    info $ msg (val "known hosts: " +++ show (h:x))
-
-getPolicy :: Client Policy
-getPolicy = view policy >>= liftIO . readTVarIO
-
-discoverPeers :: Connection -> Client [Host]
-discoverPeers c = do
-    r <- query c One peers ()
-    p <- view (settings.portnumber)
-    mapM (fn p) (map asRecord r)
-  where
-    fn p h = do
-        let a = ip2SockAddr p (peerRPC h)
-        mkHost (peerDC h) (peerRack h) (peerRPC h) a
-
-mkHost :: Text -> Text -> IP -> SockAddr -> Client Host
-mkHost dc rk ip a = do
-    let hostState t = if t then StatusUp else StatusDown
-    b <- liftIO (C.ping a)
-    h <- Host ip a
-            <$> liftIO (newTVarIO (hostState b))
-            <*> liftIO (newTVarIO False)
-            <*> pure dc
-            <*> pure rk
-            <*> mkPool a
-    when (hostState b == StatusDown) $
-        monitor 60000000 h
-    return h
-
-mkPool :: SockAddr -> Client Pool
-mkPool a = do
-    s <- view settings
-    t <- view timeouts
-    g <- view logger
-    liftIO $ create (connOpen s t g)
-                    (connClose g)
-                    g
-                    (s^.poolSettings)
-                    (s^.connSettings.maxStreams)
-  where
-    connOpen s t g = do
-        c <- C.connect (s^.connSettings) t (s^.protoVersion) g a
-        Logger.debug g $
-            msg (val "client.connect")
-            ~~ "host" .= show (sockAddr2IP a)
-            ~~ "conn" .= show c
-        connInit s c `onException` connClose g c
-        return c
-
-    connInit s con = do
-        C.startup con
-        for_ (s^.connSettings.defKeyspace) $
-            C.useKeyspace con
-
-    connClose g con = do
-        Logger.debug g $
-            msg (val "client.close")
-            ~~ "host" .= show (sockAddr2IP a)
-            ~~ "conn" .= show con
-        C.close con
-
-eventHandler :: Event -> Client ()
-eventHandler x = do
+onCqlEvent :: Event -> Client ()
+onCqlEvent x = do
     info $ "client.event" .= show x
-    s <- view settings
-    p <- getPolicy
+    pol <- view policy
+    prt <- view (context.settings.portnumber)
     case x of
-        StatusEvent Up   sa -> liftIO $ handler_ p (HostUp (mapPort (s^.portnumber) sa))
-        StatusEvent Down sa -> liftIO $ handler_ p (HostDown (mapPort (s^.portnumber) sa))
+        StatusEvent Down sa -> do
+            onEvent pol $ HostDown (InetAddr $ mapPort prt sa)
         TopologyEvent RemovedNode sa -> do
-            liftIO $ handler_ p (HostRemoved (mapPort (s^.portnumber) sa))
-            view cleanups >>= Cleanups.destroy sa
+            let a = InetAddr $ mapPort prt sa
+            hmap <- view hostmap
+            onEvent pol $ HostGone a
+            atomically' $
+                modifyTVar hmap (Map.filterWithKey (\h _ -> h^.hostAddr /= a))
+        StatusEvent Up sa ->
+            startMonitor $ (InetAddr $ mapPort prt sa)
         TopologyEvent NewNode sa -> do
-            let sa' = mapPort (s^.portnumber) sa
-            h <- mkHost "" "" (sockAddr2IP sa') sa'
-            o <- view hosts
-            liftIO $ do
-                res <- handler p (HostAdded h)
-                when (res == Accepted) $
-                    atomically $ modifyTVar o (Set.insert h)
-        SchemaEvent   _ -> return ()
+            let a = InetAddr $ mapPort prt sa
+            let h = Host a "" ""
+            hmap <- view hostmap
+            ctx  <- view context
+            okay <- acceptable pol h
+            when okay $ do
+                p <- mkPool ctx (h^.hostAddr)
+                atomically' $ modifyTVar hmap (Map.alter (maybe (Just p) Just) h)
+                onEvent pol $ HostNew h
+        SchemaEvent _ -> return ()
   where
     mapPort i (SockAddrInet _ a)      = SockAddrInet i a
     mapPort i (SockAddrInet6 _ f a b) = SockAddrInet6 i f a b
     mapPort _ unix                    = unix
 
+    startMonitor a = do
+        hmp <- readTVarIO' =<< view hostmap
+        case find ((a ==) . view hostAddr) (Map.keys hmp) of
+            Just h  -> do
+                ctx <- view context
+                jbs <- view jobs
+                Jobs.add jbs a $ monitor ctx 1000000 60000000 h
+            Nothing -> return ()
+
+-----------------------------------------------------------------------------
+-- Utilities
+
+peer2Host :: PortNumber -> Peer -> Host
+peer2Host i p = Host (ip2inet i (peerRPC p)) (peerDC p) (peerRack p)
+
+local2Host :: InetAddr -> Maybe (Text, Text) -> Host
+local2Host i (Just (dc, rk)) = Host i dc rk
+local2Host i Nothing         = Host i "" ""
+
+allEventTypes :: [EventType]
+allEventTypes = [TopologyChangeEvent, StatusChangeEvent, SchemaChangeEvent]
+
 tryAll :: NonEmpty a -> (a -> IO b) -> IO b
 tryAll (a :| []) f = f a
 tryAll (a :| aa) f = f a `catchAll` (const $ tryAll (NE.fromList aa) f)
+
+atomically' :: STM a -> Client a
+atomically' = liftIO . atomically
+
+readTVarIO' :: TVar a -> Client a
+readTVarIO' = liftIO . readTVarIO

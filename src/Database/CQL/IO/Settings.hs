@@ -26,7 +26,7 @@ data Settings = Settings
     , _portnumber    :: PortNumber
     , _contacts      :: NonEmpty String
     , _maxWaitQueue  :: Maybe Word64
-    , _onEvent       :: EventHandler
+    , _eventHandler  :: EventHandler
     , _policyMaker   :: IO Policy
     }
 
@@ -58,8 +58,8 @@ addContact v = over contacts (v <|)
 setPortNumber :: PortNumber -> Settings -> Settings
 setPortNumber v = set portnumber v
 
-setOnEventHandler :: EventHandler -> Settings -> Settings
-setOnEventHandler v = set onEvent v
+setEventHandler :: EventHandler -> Settings -> Settings
+setEventHandler v = set eventHandler v
 
 setPolicy :: IO Policy -> Settings -> Settings
 setPolicy v = set policyMaker v

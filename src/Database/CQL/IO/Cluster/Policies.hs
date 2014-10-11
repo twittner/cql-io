@@ -2,12 +2,11 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+{-# LANGUAGE RankNTypes      #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Database.CQL.IO.Cluster.Policies
     ( Policy (..)
-    , Result (..)
-    , handler_
     , random
     , roundRobin
     ) where
@@ -15,66 +14,62 @@ module Database.CQL.IO.Cluster.Policies
 import Control.Applicative
 import Control.Concurrent.STM
 import Control.Lens ((^.), view, over, makeLenses)
+import Control.Monad
+import Control.Monad.IO.Class
 import Data.Map.Strict (Map)
 import Database.CQL.IO.Cluster.Host
-import Network.Socket (SockAddr)
+import Database.CQL.IO.Types (InetAddr)
 import System.Random.MWC
 
 import qualified Data.Map.Strict as Map
 
+data Policy = Policy
+    { setup      :: MonadIO m => [Host] -> [Host] -> m ()
+    , onEvent    :: MonadIO m => HostEvent -> m ()
+    , select     :: MonadIO m => m (Maybe Host)
+    , acceptable :: MonadIO m => Host -> m Bool
+    , display    :: MonadIO m => m String
+    }
+
 type HostMap = TVar Hosts
 
 data Hosts = Hosts
-    { _alive :: Map SockAddr Host
-    , _other :: Map SockAddr Host
-    }
+    { _alive :: Map InetAddr Host
+    , _other :: Map InetAddr Host
+    } deriving Show
 
 makeLenses ''Hosts
-
-data Result
-    = Accepted
-    | Rejected
-    | Ignored
-    deriving (Eq, Ord, Show)
-
-data Policy = Policy
-    { handler :: HostEvent -> IO Result
-    , getHost :: IO (Maybe Host)
-    }
-
-handler_ :: Policy -> HostEvent -> IO ()
-handler_ p e = handler p e >> return ()
 
 -- | Iterate over all hosts.
 roundRobin :: IO Policy
 roundRobin = do
-    hhh <- newTVarIO emptyHosts
-    ctr <- newTVarIO 0
-    return $ Policy (onEvent hhh) (pickHost hhh ctr)
+    h <- newTVarIO emptyHosts
+    c <- newTVarIO 0
+    return $ Policy (defSetup h) (defOnEvent h) (pickHost h c) defAcceptable (defDisplay h)
   where
-    pickHost hhh ctr = atomically $ do
-        m <- view alive <$> readTVar hhh
-        if Map.null m
-            then return Nothing
-            else do
-                k <- readTVar ctr
-                writeTVar ctr $ if k < Map.size m - 1 then succ k else 0
-                return . Just . snd $ Map.elemAt k m
+    pickHost h c = liftIO $ atomically $ do
+        m <- view alive <$> readTVar h
+        if Map.null m then
+            return Nothing
+        else do
+            k <- readTVar c
+            writeTVar c $ if k < Map.size m - 1 then succ k else 0
+            return . Just . snd $ Map.elemAt k m
 
 -- | Return hosts in random order.
 random :: IO Policy
 random = do
-    hhh <- newTVarIO emptyHosts
-    gen <- createSystemRandom
-    return $ Policy (onEvent hhh) (pickHost hhh gen)
+    h <- newTVarIO emptyHosts
+    g <- createSystemRandom
+    return $ Policy (defSetup h) (defOnEvent h) (pickHost h g) defAcceptable (defDisplay h)
   where
-    pickHost hhh gen = do
-        m <- view alive <$> readTVarIO hhh
-        if Map.null m
-            then return Nothing
-            else do
-                let i = uniformR (0, Map.size m - 1) gen
-                Just . snd . flip Map.elemAt m <$> i
+    pickHost h g = liftIO $ do
+        m <- view alive <$> readTVarIO h
+        if Map.null m then
+            return Nothing
+        else do
+            let i = uniformR (0, Map.size m - 1) g
+            Just . snd . flip Map.elemAt m <$> i
 
 -----------------------------------------------------------------------------
 -- Defaults
@@ -82,36 +77,46 @@ random = do
 emptyHosts :: Hosts
 emptyHosts = Hosts Map.empty Map.empty
 
-onEvent :: HostMap -> HostEvent -> IO Result
-onEvent r (HostAdded h) = atomically $ do
-    m <- readTVar r
-    case get (h^.hostAddr) m of
-        Nothing -> do
-            writeTVar r (over alive (Map.insert (h^.hostAddr) h) m)
-            return Accepted
-        _  -> return Ignored
-onEvent r (HostRemoved s) = atomically $ do
-    h <- readTVar r
-    if Map.member s (h^.alive)
-        then writeTVar r (over alive (Map.delete s) h)
-        else writeTVar r (over other (Map.delete s) h)
-    return Accepted
-onEvent r (HostUp s) = atomically $ do
-    h <- readTVar r
-    case get s h of
-        Nothing -> return ()
-        Just  x -> do
-            writeTVar (x^.status) StatusUp
-            writeTVar r (over alive (Map.insert s x) . over other (Map.delete s) $ h)
-    return Accepted
-onEvent r (HostDown s) = atomically $ do
-    h <- readTVar r
-    case get s h of
-        Nothing -> return ()
-        Just  x -> do
-            writeTVar (x^.status) StatusDown
-            writeTVar r (over other (Map.insert s x) . over alive (Map.delete s) $ h)
-    return Accepted
+defDisplay :: MonadIO m => HostMap -> m String
+defDisplay h = liftIO $ show <$> readTVarIO h
 
-get :: SockAddr -> Hosts -> Maybe Host
-get a h = Map.lookup a (h^.alive) <|> Map.lookup a (h^.other)
+defAcceptable :: MonadIO m => Host -> m Bool
+defAcceptable = const $ return True
+
+defSetup :: MonadIO m => HostMap -> [Host] -> [Host] -> m ()
+defSetup r a b = liftIO $ do
+    let ha = Map.fromList $ zip (map (view hostAddr) a) a
+    let hb = Map.fromList $ zip (map (view hostAddr) b) b
+    let hosts = Hosts ha hb
+    atomically $ writeTVar r hosts
+
+defOnEvent :: MonadIO m => HostMap -> HostEvent -> m ()
+defOnEvent r (HostNew h) = liftIO $ atomically $ do
+    m <- readTVar r
+    when (Nothing == get (h^.hostAddr) m) $
+        writeTVar r (over alive (Map.insert (h^.hostAddr) h) m)
+defOnEvent r (HostGone a) = liftIO $ atomically $ do
+    m <- readTVar r
+    if Map.member a (m^.alive) then
+        writeTVar r (over alive (Map.delete a) m)
+    else
+        writeTVar r (over other (Map.delete a) m)
+defOnEvent r (HostUp a) = liftIO $ atomically $ do
+    m <- readTVar r
+    case get a m of
+        Nothing -> return ()
+        Just  h -> writeTVar r
+            $ over alive (Map.insert a h)
+            . over other (Map.delete a)
+            $ m
+defOnEvent r (HostDown a) = liftIO $ atomically $ do
+    m <- readTVar r
+    case get a m of
+        Nothing -> return ()
+        Just  h -> writeTVar r
+            $ over other (Map.insert a h)
+            . over alive (Map.delete a)
+            $ m
+
+get :: InetAddr -> Hosts -> Maybe Host
+get a m = Map.lookup a (m^.alive) <|> Map.lookup a (m^.other)

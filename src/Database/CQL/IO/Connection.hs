@@ -22,8 +22,6 @@ module Database.CQL.IO.Connection
     , address
     , protocol
     , eventSig
-    , ip2SockAddr
-    , sockAddr2IP
 
     , ConnectionSettings
     , defSettings
@@ -47,7 +45,6 @@ import Control.Monad.IO.Class
 import Data.ByteString.Builder
 import Data.ByteString.Lazy (ByteString)
 import Data.Int
-import Data.IP
 import Data.Maybe (isJust, fromMaybe)
 import Data.Monoid
 import Data.Text.Lazy (fromStrict)
@@ -90,7 +87,7 @@ type Streams = Vector (Sync (Header, ByteString))
 
 data Connection = Connection
     { _settings :: ConnectionSettings
-    , _address  :: SockAddr
+    , _address  :: InetAddr
     , _tmanager :: TimeoutManager
     , _protocol :: Version
     , _sock     :: Socket
@@ -121,16 +118,16 @@ defSettings =
                        noCompression -- compression
                        Nothing       -- keyspace
 
-resolve :: String -> PortNumber -> IO SockAddr
+resolve :: String -> PortNumber -> IO InetAddr
 resolve host port =
-    addrAddress . head <$> getAddrInfo (Just hints) (Just host) (Just (show port))
+    InetAddr . addrAddress . head <$> getAddrInfo (Just hints) (Just host) (Just (show port))
   where
     hints = defaultHints { addrFlags = [AI_ADDRCONFIG], addrSocketType = Stream }
 
-connect :: MonadIO m => ConnectionSettings -> TimeoutManager -> Version -> Logger -> SockAddr -> m Connection
+connect :: MonadIO m => ConnectionSettings -> TimeoutManager -> Version -> Logger -> InetAddr -> m Connection
 connect t m v g a = liftIO $
     bracketOnError (mkSock a) S.close $ \s -> do
-        ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s a)
+        ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s (sockAddr a))
         unless (isJust ok) $
             throwM ConnectTimeout
         c <- open s
@@ -145,17 +142,17 @@ connect t m v g a = liftIO $
         rdr <- async (runReader v g (t^.compression) tck s syn sig)
         Connection t a m v s syn lck rdr tck g sig <$> newUnique
 
-mkSock :: SockAddr -> IO Socket
-mkSock a = socket (familyOf a) Stream defaultProtocol
+mkSock :: InetAddr -> IO Socket
+mkSock (InetAddr a) = socket (familyOf a) Stream defaultProtocol
   where
     familyOf (SockAddrInet  {..}) = AF_INET
     familyOf (SockAddrInet6 {..}) = AF_INET6
     familyOf (SockAddrUnix  {..}) = AF_UNIX
 
-ping :: MonadIO m => SockAddr -> m Bool
+ping :: MonadIO m => InetAddr -> m Bool
 ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
     fromMaybe False <$> timeout 5000000
-        ((S.connect s a >> return True) `catchAll` const (return False))
+        ((S.connect s (sockAddr a) >> return True) `catchAll` const (return False))
 
 runReader :: Version -> Logger -> Compression -> Pool -> Socket -> Streams -> Signal Event -> IO ()
 runReader v g cmp tck sck syn s = run `finally` cleanup
@@ -231,15 +228,6 @@ recv n c = toLazyByteString <$> go 0 mempty
         let b = bb <> byteString a
             m = B.length a + k
         if m < n then go m b else return b
-
-ip2SockAddr :: PortNumber -> IP -> SockAddr
-ip2SockAddr p (IPv4 a) = SockAddrInet p (toHostAddress a)
-ip2SockAddr p (IPv6 a) = SockAddrInet6 p 0 (toHostAddress6 a) 0
-
-sockAddr2IP :: SockAddr -> IP
-sockAddr2IP (SockAddrInet _ a)      = IPv4 (fromHostAddress a)
-sockAddr2IP (SockAddrInet6 _ _ a _) = IPv6 (fromHostAddress6 a)
-sockAddr2IP _                       = error "sockAddr2IP: not IP4/IP6 address"
 
 -----------------------------------------------------------------------------
 -- Operations

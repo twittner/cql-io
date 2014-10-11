@@ -29,13 +29,13 @@ library
         Database.CQL.IO
 
     other-modules:
-        Database.CQL.IO.Cleanups
         Database.CQL.IO.Client
         Database.CQL.IO.Cluster.Discovery
         Database.CQL.IO.Cluster.Host
         Database.CQL.IO.Cluster.Policies
         Database.CQL.IO.Connection
         Database.CQL.IO.Hexdump
+        Database.CQL.IO.Jobs
         Database.CQL.IO.Pool
         Database.CQL.IO.Protocol
         Database.CQL.IO.Settings
