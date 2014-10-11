@@ -14,15 +14,17 @@ import Control.Applicative
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Monad
+import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Database.CQL.IO.Types
 import Data.Map.Strict (Map)
+import Data.Unique
 
 import qualified Data.Map.Strict as Map
 
 data Job
     = Reserved
-    | Running (Async ())
+    | Running !Unique (Async ())
 
 newtype Jobs k = Jobs (TVar (Map k Job))
 
@@ -34,8 +36,8 @@ add (Jobs d) k j = liftIO $ do
     (ok, prev) <- atomically $ do
         m <- readTVar d
         case Map.lookup k m of
-            Just Reserved    -> return (False, Nothing)
-            Just (Running a) -> do
+            Just Reserved      -> return (False, Nothing)
+            Just (Running _ a) -> do
                 modifyTVar d (Map.insert k Reserved)
                 return (True, Just a)
             Nothing          -> do
@@ -43,17 +45,24 @@ add (Jobs d) k j = liftIO $ do
                 return (True, Nothing)
     when ok $ do
         maybe (return ()) (ignore . cancel) prev
-        a <- async j
+        u <- newUnique
+        a <- async $ j `finally` remove u
         atomically $
-            modifyTVar d (Map.insert k (Running a))
+            modifyTVar d (Map.insert k (Running u a))
+  where
+    remove u = atomically $
+        modifyTVar d $ flip Map.update k $ \a ->
+            case a of
+                Running u' _ | u == u' -> Nothing
+                _                      -> Just a
 
 destroy :: MonadIO m => Jobs k -> m ()
 destroy (Jobs d) = liftIO $ do
     items <- Map.elems <$> atomically (swapTVar d Map.empty)
     mapM_ f items
   where
-    f (Running a) = ignore (cancel a)
-    f _           = return ()
+    f (Running _ a) = ignore (cancel a)
+    f _             = return ()
 
 showJobs :: MonadIO m => Jobs k -> m [k]
 showJobs (Jobs d) = liftIO $ Map.keys <$> readTVarIO d

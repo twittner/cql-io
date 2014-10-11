@@ -280,8 +280,8 @@ shutdown s = liftIO $ do
 
 monitor :: Context -> Int -> Int -> Host -> IO ()
 monitor ctx initial upperBound h = do
-    Logger.info (ctx^.logger) $ msg (val "monitoring: " +++ show h)
     threadDelay initial
+    Logger.info (ctx^.logger) $ msg (val "monitoring: " +++ show h)
     hostCheck 0 maxN
   where
     hostCheck :: Int -> Int -> IO ()
@@ -391,7 +391,7 @@ onCqlEvent x = do
             Just h  -> do
                 ctx <- view context
                 jbs <- view jobs
-                Jobs.add jbs a $ monitor ctx 1000000 60000000 h
+                Jobs.add jbs a $ monitor ctx 3000000 60000000 h
             Nothing -> return ()
 
 -----------------------------------------------------------------------------
