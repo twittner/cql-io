@@ -117,8 +117,12 @@ request a = do
     h <- pickHost (s^.policy)
     p <- Map.lookup h <$> readTVarIO' (s^.hostmap)
     case p of
-        Nothing -> error "missing pool"
         Just  x -> action s x `catches` handlers h
+        Nothing -> do
+            err $ msg (val "no pool for host " +++ show h)
+            p' <- mkPool (s^.context) (h^.hostAddr)
+            atomically' $ modifyTVar (s^.hostmap) (Map.alter (maybe (Just p') Just) h)
+            request a
   where
     action s p = case s^.context.settings.maxWaitQueue of
         Nothing -> liftIO $ with p (transaction s)
