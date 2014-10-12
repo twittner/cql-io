@@ -5,11 +5,11 @@
 module Database.CQL.IO
     ( Settings
     , defSettings
-    , setVersion
+    , setProtocolVersion
     , setCompression
-    , setHost
-    , setPort
-    , setKeyspace
+    , setContacts
+    , addContact
+    , setPortNumber
     , setIdleTimeout
     , setMaxConnections
     , setMaxStreams
@@ -19,14 +19,19 @@ module Database.CQL.IO
     , setSendTimeout
     , setMaxTimeouts
     , setResponseTimeout
-    , setOnEventHandler
-
-    , Pool
-    , mkPool
-    , shutdown
+    , setKeyspace
+    , setEventHandler
+    , setPolicy
 
     , Client
+    , ClientState
     , runClient
+    , Database.CQL.IO.Client.init
+    , shutdown
+
+    , Policy
+    , random
+    , roundRobin
 
     , query
     , write
@@ -43,9 +48,6 @@ module Database.CQL.IO
     , register
     , batch
 
-    -- * Transfer settings
-    , uncompressed
-
     , request
     , command
 
@@ -61,6 +63,7 @@ import Control.Monad.Catch
 import Control.Monad (void)
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
+import Database.CQL.IO.Cluster.Policies
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Types
 
@@ -81,10 +84,10 @@ query q p = do
         RsResult _ (RowsResult _ b) -> return b
         _                           -> throwM UnexpectedResponse
 
-write :: (Tuple a) => QueryString W a () -> QueryParams a -> Client ()
+write :: Tuple a => QueryString W a () -> QueryParams a -> Client ()
 write q p = void $ query' q p
 
-schema :: (Tuple a) => QueryString S a () -> QueryParams a -> Client (Maybe SchemaChange)
+schema :: Tuple a => QueryString S a () -> QueryParams a -> Client (Maybe SchemaChange)
 schema x y = do
     r <- query' x y
     case r of
@@ -100,16 +103,16 @@ prepare' q = do
     r <- request (RqPrepare (Prepare q))
     case r of
         RsResult _ (PreparedResult i _ _) -> return i
-        RsError _ e                       -> throwM e
+        RsError  _ e                      -> throwM e
         _                                 -> throwM UnexpectedResponse
 
 prepare :: (Tuple a, Tuple b) => QueryString R a b -> Client (QueryId R a b)
 prepare = prepare'
 
-prepareWrite :: (Tuple a) => QueryString W a () -> Client (QueryId W a ())
+prepareWrite :: Tuple a => QueryString W a () -> Client (QueryId W a ())
 prepareWrite = prepare'
 
-prepareSchema :: (Tuple a) => QueryString S a () -> Client (QueryId S a ())
+prepareSchema :: Tuple a => QueryString S a () -> Client (QueryId S a ())
 prepareSchema = prepare'
 
 ------------------------------------------------------------------------------
@@ -129,10 +132,10 @@ execute q p = do
         RsResult _ (RowsResult _ b) -> return b
         _                           -> throwM UnexpectedResponse
 
-executeWrite :: (Tuple a) => QueryId W a () -> QueryParams a -> Client ()
+executeWrite :: Tuple a => QueryId W a () -> QueryParams a -> Client ()
 executeWrite q p = void $ execute' q p
 
-executeSchema :: (Tuple a) => QueryId S a () -> QueryParams a -> Client (Maybe SchemaChange)
+executeSchema :: Tuple a => QueryId S a () -> QueryParams a -> Client (Maybe SchemaChange)
 executeSchema q p = do
     r <- execute' q p
     case r of
@@ -140,12 +143,11 @@ executeSchema q p = do
         RsResult _ VoidResult             -> return Nothing
         _                                 -> throwM UnexpectedResponse
 
-batch :: Consistency -> BatchType -> [BatchQuery] -> Client ()
-batch c t q = command (RqBatch (Batch t q c))
+batch :: Batch -> Client ()
+batch b = command (RqBatch b)
 
 ------------------------------------------------------------------------------
 -- register
 
 register :: [EventType] -> Client ()
 register = command . RqRegister . Register
-

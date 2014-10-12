@@ -20,15 +20,14 @@ parse x (h, a) =
         Left  e -> throw $ InternalError ("response body reading: " ++ e)
         Right r -> r
 
-serialise :: Tuple a => Compression -> Request k a b -> Int -> ByteString
-serialise f r i =
+serialise :: Tuple a => Version -> Compression -> Request k a b -> Int -> ByteString
+serialise v f r i =
     let c = case getOpCode r of
                 OcStartup -> noCompression
                 OcOptions -> noCompression
                 _         -> f
-        s = StreamId (fromIntegral i)
-    in either (throw $ InternalError "request creation") id (pack c False s r)
+        s = mkStreamId i
+    in either (throw $ InternalError "request creation") id (pack v c False s r)
 
 quoted :: LT.Text -> LT.Text
 quoted s = "\"" <> LT.replace "\"" "\"\"" s <> "\""
-
