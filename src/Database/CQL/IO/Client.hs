@@ -153,7 +153,7 @@ request a = do
         , Handler $ \(e :: IOException)     -> onConnectionError h e >> throwM e
         ]
 
-    pickHost p = maybe (throwM NoHostAvailable) return =<< select p
+    pickHost p = maybe (throwM NoHostAvailable) return =<< liftIO (select p)
 
 command :: Request k () () -> Client ()
 command = void . request
@@ -176,7 +176,7 @@ instance Show DebugInfo where
 debugInfo :: Client DebugInfo
 debugInfo = do
     hosts <- Map.keys <$> (readTVarIO' =<< view hostmap)
-    pols  <- display =<< view policy
+    pols  <- liftIO . display =<< view policy
     jbs   <- Jobs.showJobs =<< view jobs
     return $ DebugInfo pols jbs hosts
 
@@ -186,7 +186,7 @@ debugInfo = do
 init :: MonadIO m => Logger -> Settings -> m ClientState
 init g s = liftIO $ do
     t <- TM.create 250
-    c <- tryAll (s^.contacts) (mkConnection t) `onException` TM.destroy t True
+    c <- tryAll (s^.contacts) (mkConnection t)
     e <- Context s g t <$> signal
     p <- s^.policyMaker
     x <- ClientState e
@@ -217,7 +217,7 @@ initialise c = do
     m <- view hostmap
     let h = Map.union u d
     atomically' $ writeTVar m h
-    setup pol (Map.keys u) (Map.keys d)
+    liftIO $ setup pol (Map.keys u) (Map.keys d)
     register c allEventTypes (runClient env . onCqlEvent)
     info $ msg (val "known hosts: " +++ show (Map.keys h))
     j <- view jobs
@@ -363,11 +363,11 @@ onCqlEvent x = do
     prt <- view (context.settings.portnumber)
     case x of
         StatusEvent Down sa -> do
-            onEvent pol $ HostDown (InetAddr $ mapPort prt sa)
+            liftIO $ onEvent pol $ HostDown (InetAddr $ mapPort prt sa)
         TopologyEvent RemovedNode sa -> do
             let a = InetAddr $ mapPort prt sa
             hmap <- view hostmap
-            onEvent pol $ HostGone a
+            liftIO $ onEvent pol $ HostGone a
             atomically' $
                 modifyTVar hmap (Map.filterWithKey (\h _ -> h^.hostAddr /= a))
         StatusEvent Up sa ->
@@ -377,11 +377,11 @@ onCqlEvent x = do
             let h = Host a "" ""
             hmap <- view hostmap
             ctx  <- view context
-            okay <- acceptable pol h
+            okay <- liftIO $ acceptable pol h
             when okay $ do
                 p <- mkPool ctx (h^.hostAddr)
                 atomically' $ modifyTVar hmap (Map.alter (maybe (Just p) Just) h)
-                onEvent pol $ HostNew h
+                liftIO $ onEvent pol $ HostNew h
         SchemaEvent _ -> return ()
   where
     mapPort i (SockAddrInet _ a)      = SockAddrInet i a

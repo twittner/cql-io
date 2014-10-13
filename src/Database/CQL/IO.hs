@@ -5,33 +5,39 @@
 module Database.CQL.IO
     ( Settings
     , defSettings
-    , setProtocolVersion
-    , setCompression
-    , setContacts
     , addContact
-    , setPortNumber
+    , setCompression
+    , setConnectTimeout
+    , setContacts
+    , setEventHandler
     , setIdleTimeout
+    , setKeyspace
     , setMaxConnections
     , setMaxStreams
-    , setMaxWaitQueue
-    , setPoolStripes
-    , setConnectTimeout
-    , setSendTimeout
     , setMaxTimeouts
-    , setResponseTimeout
-    , setKeyspace
-    , setEventHandler
+    , setMaxWaitQueue
     , setPolicy
+    , setPoolStripes
+    , setPortNumber
+    , setProtocolVersion
+    , setResponseTimeout
+    , setSendTimeout
 
     , Client
     , ClientState
+    , DebugInfo (..)
+    , init
     , runClient
-    , Database.CQL.IO.Client.init
     , shutdown
+    , debugInfo
 
-    , Policy
+    , Policy (..)
     , random
     , roundRobin
+
+    , Host
+    , HostEvent (..)
+    , InetAddr  (..)
 
     , query
     , write
@@ -54,6 +60,7 @@ module Database.CQL.IO
     -- * Exceptions
     , InvalidSettings    (..)
     , InternalError      (..)
+    , HostError          (..)
     , ConnectionError    (..)
     , UnexpectedResponse (..)
     , Timeout            (..)
@@ -63,9 +70,11 @@ import Control.Monad.Catch
 import Control.Monad (void)
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
+import Database.CQL.IO.Cluster.Host
 import Database.CQL.IO.Cluster.Policies
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Types
+import Prelude hiding (init)
 
 ------------------------------------------------------------------------------
 -- query

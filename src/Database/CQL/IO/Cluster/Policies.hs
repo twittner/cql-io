@@ -2,7 +2,6 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE RankNTypes      #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Database.CQL.IO.Cluster.Policies
@@ -15,7 +14,6 @@ import Control.Applicative
 import Control.Concurrent.STM
 import Control.Lens ((^.), view, over, makeLenses)
 import Control.Monad
-import Control.Monad.IO.Class
 import Data.Map.Strict (Map)
 import Database.CQL.IO.Cluster.Host
 import Database.CQL.IO.Types (InetAddr)
@@ -24,11 +22,11 @@ import System.Random.MWC
 import qualified Data.Map.Strict as Map
 
 data Policy = Policy
-    { setup      :: MonadIO m => [Host] -> [Host] -> m ()
-    , onEvent    :: MonadIO m => HostEvent -> m ()
-    , select     :: MonadIO m => m (Maybe Host)
-    , acceptable :: MonadIO m => Host -> m Bool
-    , display    :: MonadIO m => m String
+    { setup      :: [Host] -> [Host] -> IO ()
+    , onEvent    :: HostEvent -> IO ()
+    , select     :: IO (Maybe Host)
+    , acceptable :: Host -> IO Bool
+    , display    :: IO String
     }
 
 type HostMap = TVar Hosts
@@ -47,7 +45,7 @@ roundRobin = do
     c <- newTVarIO 0
     return $ Policy (defSetup h) (defOnEvent h) (pickHost h c) defAcceptable (defDisplay h)
   where
-    pickHost h c = liftIO $ atomically $ do
+    pickHost h c = atomically $ do
         m <- view alive <$> readTVar h
         if Map.null m then
             return Nothing
@@ -63,7 +61,7 @@ random = do
     g <- createSystemRandom
     return $ Policy (defSetup h) (defOnEvent h) (pickHost h g) defAcceptable (defDisplay h)
   where
-    pickHost h g = liftIO $ do
+    pickHost h g = do
         m <- view alive <$> readTVarIO h
         if Map.null m then
             return Nothing
@@ -77,31 +75,31 @@ random = do
 emptyHosts :: Hosts
 emptyHosts = Hosts Map.empty Map.empty
 
-defDisplay :: MonadIO m => HostMap -> m String
-defDisplay h = liftIO $ show <$> readTVarIO h
+defDisplay :: HostMap -> IO String
+defDisplay h = show <$> readTVarIO h
 
-defAcceptable :: MonadIO m => Host -> m Bool
+defAcceptable :: Host -> IO Bool
 defAcceptable = const $ return True
 
-defSetup :: MonadIO m => HostMap -> [Host] -> [Host] -> m ()
-defSetup r a b = liftIO $ do
+defSetup :: HostMap -> [Host] -> [Host] -> IO ()
+defSetup r a b = do
     let ha = Map.fromList $ zip (map (view hostAddr) a) a
     let hb = Map.fromList $ zip (map (view hostAddr) b) b
     let hosts = Hosts ha hb
     atomically $ writeTVar r hosts
 
-defOnEvent :: MonadIO m => HostMap -> HostEvent -> m ()
-defOnEvent r (HostNew h) = liftIO $ atomically $ do
+defOnEvent :: HostMap -> HostEvent -> IO ()
+defOnEvent r (HostNew h) = atomically $ do
     m <- readTVar r
     when (Nothing == get (h^.hostAddr) m) $
         writeTVar r (over alive (Map.insert (h^.hostAddr) h) m)
-defOnEvent r (HostGone a) = liftIO $ atomically $ do
+defOnEvent r (HostGone a) = atomically $ do
     m <- readTVar r
     if Map.member a (m^.alive) then
         writeTVar r (over alive (Map.delete a) m)
     else
         writeTVar r (over other (Map.delete a) m)
-defOnEvent r (HostUp a) = liftIO $ atomically $ do
+defOnEvent r (HostUp a) = atomically $ do
     m <- readTVar r
     case get a m of
         Nothing -> return ()
@@ -109,7 +107,7 @@ defOnEvent r (HostUp a) = liftIO $ atomically $ do
             $ over alive (Map.insert a h)
             . over other (Map.delete a)
             $ m
-defOnEvent r (HostDown a) = liftIO $ atomically $ do
+defOnEvent r (HostDown a) = atomically $ do
     m <- readTVar r
     case get a m of
         Nothing -> return ()
