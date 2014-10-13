@@ -309,20 +309,19 @@ onConnectionError :: Exception e => Host -> e -> Client ()
 onConnectionError h exc = do
     warn $ "exception" .= show exc
     e <- ask
-    mask_ $ do
-        conn <- atomically' $ do
-            ctrl <- readTVar (e^.control)
-            let a = ctrl^.connection.address
-            if ctrl^.state == Connected && a == h^.hostAddr then do
-                writeTVar (e^.control) (set state Reconnecting ctrl)
-                return $ Just (ctrl^.connection)
-            else
-                return Nothing
-        maybe (liftIO . ignore . onEvent (e^.policy) $ HostDown (h^.hostAddr))
-              (liftIO . void . async . recovering reconnectPolicy reconnectHandlers . continue e)
-              conn
-        Jobs.add (e^.jobs) (h^.hostAddr) $
-            monitor (e^.context) 0 30000000 h
+    c <- atomically' $ do
+        ctrl <- readTVar (e^.control)
+        let a = ctrl^.connection.address
+        if ctrl^.state == Connected && a == h^.hostAddr then do
+            writeTVar (e^.control) (set state Reconnecting ctrl)
+            return $ Just (ctrl^.connection)
+        else
+            return Nothing
+    maybe (liftIO . ignore . onEvent (e^.policy) $ HostDown (h^.hostAddr))
+          (liftIO . void . async . recovering reconnectPolicy reconnectHandlers . continue e)
+          c
+    Jobs.add (e^.jobs) (h^.hostAddr) $
+        monitor (e^.context) 0 30000000 h
   where
     continue e conn = do
         Jobs.destroy (e^.jobs)
