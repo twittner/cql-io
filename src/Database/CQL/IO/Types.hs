@@ -25,7 +25,13 @@ newtype Milliseconds = Ms { ms :: Int } deriving (Eq, Show, Num)
 newtype InetAddr = InetAddr { sockAddr :: SockAddr } deriving (Eq, Ord)
 
 instance Show InetAddr where
-    show = show . inet2ip
+    show (InetAddr (SockAddrInet p a)) =
+        let i = fromIntegral p :: Int in
+        shows (fromHostAddress a) . showString ":" . shows i $ ""
+    show (InetAddr (SockAddrInet6 p _ a _)) =
+        let i = fromIntegral p :: Int in
+        shows (fromHostAddress6 a) . showString ":" . shows i $ ""
+    show (InetAddr (SockAddrUnix unix)) = unix
 
 ip2inet :: PortNumber -> IP -> InetAddr
 ip2inet p (IPv4 a) = InetAddr $ SockAddrInet p (toHostAddress a)
@@ -118,7 +124,3 @@ instance Show UnexpectedResponse where
 ignore :: IO () -> IO ()
 ignore a = catchAll a (const $ return ())
 {-# INLINE ignore #-}
-
-unit :: Monad m => a -> m ()
-unit = const $ return ()
-{-# INLINE unit #-}
