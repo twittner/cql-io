@@ -202,7 +202,7 @@ init g s = liftIO $ do
     mkConnection t h = do
         a <- C.resolve h (s^.portnumber)
         c <- C.connect (s^.connSettings) t (s^.protoVersion) g a
-        Logger.info g $ msg (val "control connection: " +++ h +++ val ":" +++ show (s^.portnumber))
+        Logger.info g $ msg (val "control connection: " +++ show c)
         return c
 
 initialise :: Connection -> Client ()
@@ -254,8 +254,7 @@ mkPool ctx i = liftIO $ do
     connOpen s = do
         let g = ctx^.logger
         c <- C.connect (s^.connSettings) (ctx^.timeouts) (s^.protoVersion) g i
-        Logger.debug g $
-            msg (val "client.connect") ~~ "host" .= show i ~~ "conn" .= show c
+        Logger.debug g $ "client.connect" .= show c
         connInit c `onException` connClose c
         return c
 
@@ -265,8 +264,7 @@ mkPool ctx i = liftIO $ do
             C.useKeyspace con
 
     connClose con = do
-        Logger.debug (ctx^.logger) $
-            msg (val "client.close") ~~ "host" .= show i ~~ "conn" .= show con
+        Logger.debug (ctx^.logger) $ "client.close" .= show con
         C.close con
 
 -----------------------------------------------------------------------------
@@ -354,7 +352,7 @@ replaceControl a = do
     c <- C.connect (s^.connSettings) (ctx^.timeouts) (s^.protoVersion) (ctx^.logger) a
     initialise c
     atomically' $ writeTVar ctl (Control Connected c)
-    info $ msg (val "new control: " +++ show a +++ val ":" +++ show (s^.portnumber))
+    info $ msg (val "new control connection: " +++ show c)
 
 onCqlEvent :: Event -> Client ()
 onCqlEvent x = do

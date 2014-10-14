@@ -85,16 +85,16 @@ instance Show HostError where
 
 data ConnectionError
     = ConnectionsBusy
-    | ConnectionClosed
-    | ConnectTimeout
+    | ConnectionClosed !InetAddr
+    | ConnectTimeout !InetAddr
     deriving Typeable
 
 instance Exception ConnectionError
 
 instance Show ConnectionError where
-    show ConnectionsBusy   = "Database.CQL.IO.ConnectionsBusy"
-    show ConnectionClosed  = "Database.CQL.IO.ConnectionClosed"
-    show ConnectTimeout    = "Database.CQL.IO.ConnectTimeout"
+    show ConnectionsBusy      = "Database.CQL.IO.ConnectionsBusy"
+    show (ConnectionClosed i) = "Database.CQL.IO.ConnectionClosed: " ++ show i
+    show (ConnectTimeout i)   = "Database.CQL.IO.ConnectTimeout: " ++ show i
 
 -----------------------------------------------------------------------------
 -- Timeout
@@ -112,7 +112,7 @@ instance Show Timeout where
 
 data UnexpectedResponse where
     UnexpectedResponse  :: UnexpectedResponse
-    UnexpectedResponse' :: (Show b) => Response k a b -> UnexpectedResponse
+    UnexpectedResponse' :: Show b => Response k a b -> UnexpectedResponse
 
 deriving instance Typeable UnexpectedResponse
 instance Exception UnexpectedResponse

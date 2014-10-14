@@ -107,7 +107,11 @@ instance Eq Connection where
     a == b = a^.ident == b^.ident
 
 instance Show Connection where
-    show c = "Connection" ++ show (c^.sock)
+    show c = showString "Connection<"
+           . shows (c^.address)
+           . showString ","
+           . shows (fd $ c^.sock)
+           $ ">"
 
 defSettings :: ConnectionSettings
 defSettings =
@@ -129,7 +133,7 @@ connect t m v g a = liftIO $
     bracketOnError (mkSock a) S.close $ \s -> do
         ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s (sockAddr a))
         unless (isJust ok) $
-            throwM ConnectTimeout
+            throwM (ConnectTimeout a)
         c <- open s
         validateSettings c
         return c
@@ -139,7 +143,7 @@ connect t m v g a = liftIO $
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
         lck <- newMVar ()
         sig <- signal
-        rdr <- async (runReader v g (t^.compression) tck s syn sig)
+        rdr <- async (runReader v g (t^.compression) tck a s syn sig)
         Connection t a m v s syn lck rdr tck g sig <$> newUnique
 
 mkSock :: InetAddr -> IO Socket
@@ -154,11 +158,11 @@ ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
     fromMaybe False <$> timeout 5000000
         ((S.connect s (sockAddr a) >> return True) `catchAll` const (return False))
 
-runReader :: Version -> Logger -> Compression -> Pool -> Socket -> Streams -> Signal Event -> IO ()
-runReader v g cmp tck sck syn s = run `finally` cleanup
+runReader :: Version -> Logger -> Compression -> Pool -> InetAddr -> Socket -> Streams -> Signal Event -> IO ()
+runReader v g cmp tck i sck syn s = run `finally` cleanup
   where
     run = forever $ do
-        x <- readSocket v g sck
+        x <- readSocket v g i sck
         case fromStreamId $ streamId (fst x) of
             -1 ->
                 case parse cmp x :: Response () () () of
@@ -200,9 +204,9 @@ request c f = send >>= receive
             markAvailable (c^.tickets) i
             return x
 
-readSocket :: Version -> Logger -> Socket -> IO (Header, ByteString)
-readSocket v g s = do
-    b <- recv (if v == V3 then 9 else 8) s
+readSocket :: Version -> Logger -> InetAddr -> Socket -> IO (Header, ByteString)
+readSocket v g i s = do
+    b <- recv i (if v == V3 then 9 else 8) s
     h <- case header v b of
             Left  e -> throwM $ InternalError ("response header reading: " ++ e)
             Right h -> return h
@@ -210,21 +214,21 @@ readSocket v g s = do
         RqHeader -> throwM $ InternalError "unexpected request header"
         RsHeader -> do
             let len = lengthRepr (bodyLength h)
-            x <- recv (fromIntegral len) s
+            x <- recv i (fromIntegral len) s
             trace g $ "socket" .= fd s
                 ~~ "stream" .= fromStreamId (streamId h)
                 ~~ "type"   .= val "response"
                 ~~ msg' (hexdump $ L.take 160 (b <> x))
             return (h, x)
 
-recv :: Int -> Socket -> IO ByteString
-recv 0 _ = return L.empty
-recv n c = toLazyByteString <$> go 0 mempty
+recv :: InetAddr -> Int -> Socket -> IO ByteString
+recv _ 0 _ = return L.empty
+recv i n c = toLazyByteString <$> go 0 mempty
   where
     go !k !bb = do
         a <- NB.recv c (n - k)
         when (B.null a) $
-            throwM ConnectionClosed
+            throwM (ConnectionClosed i)
         let b = bb <> byteString a
             m = B.length a + k
         if m < n then go m b else return b
