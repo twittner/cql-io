@@ -170,13 +170,13 @@ runReader v g cmp tck i sck syn s = run `finally` cleanup
                     RsEvent _ e -> emit s e
                     r           -> throwM (UnexpectedResponse' r)
             sid -> do
-                ok <- Sync.put (syn ! sid) x
+                ok <- Sync.put x (syn ! sid)
                 unless ok $
                     markAvailable tck sid
 
     cleanup = do
-        Tickets.close tck
-        Vector.mapM_ Sync.close syn
+        Tickets.close (ConnectionClosed i) tck
+        Vector.mapM_ (Sync.close (ConnectionClosed i)) syn
         S.close sck
 
 close :: Connection -> IO ()
@@ -200,7 +200,7 @@ request c f = send >>= receive
         let e = Timeout (show c ++ ":" ++ show i)
         tid <- myThreadId
         withTimeout (c^.tmanager) (c^.settings.responseTimeout) (throwTo tid e) $ do
-            x <- Sync.get (view streams c ! i) `onException` Sync.kill (view streams c ! i)
+            x <- Sync.get (view streams c ! i) `onException` (Sync.kill e) (view streams c ! i)
             markAvailable (c^.tickets) i
             return x
 

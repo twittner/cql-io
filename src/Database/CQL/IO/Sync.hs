@@ -13,9 +13,13 @@ module Database.CQL.IO.Sync
 
 import Control.Applicative
 import Control.Concurrent.STM
-import Database.CQL.IO.Types (InternalError (..))
+import Control.Exception (SomeException, Exception, toException)
 
-data State a = Empty | Value !a | Killed | Closed
+data State a
+    = Empty
+    | Value  !a
+    | Killed !SomeException
+    | Closed !SomeException
 
 newtype Sync a = Sync (TVar (State a))
 
@@ -26,26 +30,26 @@ get :: Sync a -> IO a
 get (Sync s) = atomically $ do
     v <- readTVar s
     case v of
-        Empty   -> retry
-        Value a -> writeTVar s Empty >> return a
-        Closed  -> throwSTM $ InternalError "sync closed"
-        Killed  -> throwSTM $ InternalError "sync killed"
+        Empty    -> retry
+        Value  a -> writeTVar s Empty >> return a
+        Closed x -> throwSTM x
+        Killed x -> throwSTM x
 
-put :: Sync a -> a -> IO Bool
-put (Sync s) a = atomically $ do
+put :: a -> Sync a -> IO Bool
+put a (Sync s) = atomically $ do
     v <- readTVar s
     case v of
-        Empty  -> writeTVar s (Value a) >> return True
-        Closed -> return True
-        _      -> writeTVar s Empty     >> return False
+        Empty    -> writeTVar s (Value a) >> return True
+        Closed _ -> return True
+        _        -> writeTVar s Empty     >> return False
 
-kill :: Sync a -> IO ()
-kill (Sync s) = atomically $ do
+kill :: Exception e => e -> Sync a -> IO ()
+kill x (Sync s) = atomically $ do
     v <- readTVar s
     case v of
-        Closed -> return ()
-        _      -> writeTVar s Killed
+        Closed _ -> return ()
+        _        -> writeTVar s (Killed $ toException x)
 
-close :: Sync a -> IO ()
-close (Sync s) = atomically $ writeTVar s Closed
+close :: Exception e => e -> Sync a -> IO ()
+close x (Sync s) = atomically $ writeTVar s (Closed $ toException x)
 
