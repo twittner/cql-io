@@ -66,13 +66,14 @@ import System.IO (nativeNewline, Newline (..))
 import System.Logger hiding (Settings, close, defSettings, settings)
 import System.Timeout
 
-import qualified Data.ByteString           as B
-import qualified Data.ByteString.Lazy      as L
-import qualified Data.Vector               as Vector
-import qualified Database.CQL.IO.Sync      as Sync
-import qualified Database.CQL.IO.Tickets   as Tickets
-import qualified Network.Socket            as S
-import qualified Network.Socket.ByteString as NB
+import qualified Data.ByteString            as B
+import qualified Data.ByteString.Lazy       as L
+import qualified Data.ByteString.Lazy.Char8 as Char8
+import qualified Data.Vector                as Vector
+import qualified Database.CQL.IO.Sync       as Sync
+import qualified Database.CQL.IO.Tickets    as Tickets
+import qualified Network.Socket             as S
+import qualified Network.Socket.ByteString  as NB
 
 data ConnectionSettings = ConnectionSettings
     { _connectTimeout  :: Milliseconds
@@ -107,11 +108,10 @@ instance Eq Connection where
     a == b = a^.ident == b^.ident
 
 instance Show Connection where
-    show c = showString "Connection<"
-           . shows (c^.address)
-           . showString ","
-           . shows (fd $ c^.sock)
-           $ ">"
+    show = Char8.unpack . eval . bytes
+
+instance ToBytes Connection where
+    bytes c = bytes (c^.address) +++ val "#" +++ fd (c^.sock)
 
 defSettings :: ConnectionSettings
 defSettings =

@@ -5,6 +5,7 @@
 {-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE GADTs                      #-}
+{-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE StandaloneDeriving         #-}
 
 module Database.CQL.IO.Types where
@@ -14,6 +15,7 @@ import Data.IP
 import Data.Typeable
 import Database.CQL.Protocol (Event, Response, CompressionAlgorithm)
 import Network.Socket (SockAddr (..), PortNumber)
+import System.Logger.Message
 
 type EventHandler = Event -> IO ()
 
@@ -32,6 +34,15 @@ instance Show InetAddr where
         let i = fromIntegral p :: Int in
         shows (fromHostAddress6 a) . showString ":" . shows i $ ""
     show (InetAddr (SockAddrUnix unix)) = unix
+
+instance ToBytes InetAddr where
+    bytes (InetAddr (SockAddrInet p a)) =
+        let i = fromIntegral p :: Int in
+        show (fromHostAddress a) +++ val ":" +++ i
+    bytes (InetAddr (SockAddrInet6 p _ a _)) =
+        let i = fromIntegral p :: Int in
+        show (fromHostAddress6 a) +++ val ":" +++ i
+    bytes (InetAddr (SockAddrUnix unix)) = bytes unix
 
 ip2inet :: PortNumber -> IP -> InetAddr
 ip2inet p (IPv4 a) = InetAddr $ SockAddrInet p (toHostAddress a)

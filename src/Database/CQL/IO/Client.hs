@@ -119,7 +119,7 @@ request a = do
     case p of
         Just  x -> action s x `catches` handlers h
         Nothing -> do
-            err $ msg (val "no pool for host " +++ show h)
+            err $ msg (val "no pool for host " +++ h)
             p' <- mkPool (s^.context) (h^.hostAddr)
             atomically' $ modifyTVar (s^.hostmap) (Map.alter (maybe (Just p') Just) h)
             request a
@@ -201,8 +201,9 @@ init g s = liftIO $ do
   where
     mkConnection t h = do
         a <- C.resolve h (s^.portnumber)
+        Logger.debug g $ msg (val "connecting to " +++ a)
         c <- C.connect (s^.connSettings) t (s^.protoVersion) g a
-        Logger.info g $ msg (val "control connection: " +++ show c)
+        Logger.info g $ msg (val "control connection: " +++ c)
         return c
 
 initialise :: Connection -> Client ()
@@ -254,7 +255,7 @@ mkPool ctx i = liftIO $ do
     connOpen s = do
         let g = ctx^.logger
         c <- C.connect (s^.connSettings) (ctx^.timeouts) (s^.protoVersion) g i
-        Logger.debug g $ "client.connect" .= show c
+        Logger.debug g $ "client.connect" .= c
         connInit c `onException` connClose c
         return c
 
@@ -264,7 +265,7 @@ mkPool ctx i = liftIO $ do
             C.useKeyspace con
 
     connClose con = do
-        Logger.debug (ctx^.logger) $ "client.close" .= show con
+        Logger.debug (ctx^.logger) $ "client.close" .= con
         C.close con
 
 -----------------------------------------------------------------------------
@@ -283,7 +284,7 @@ shutdown s = liftIO $ do
 monitor :: Context -> Int -> Int -> Host -> IO ()
 monitor ctx initial upperBound h = do
     threadDelay initial
-    Logger.info (ctx^.logger) $ msg (val "monitoring: " +++ show h)
+    Logger.info (ctx^.logger) $ msg (val "monitoring: " +++ h)
     hostCheck 0 maxN
   where
     hostCheck :: Int -> Int -> IO ()
@@ -292,9 +293,9 @@ monitor ctx initial upperBound h = do
         isUp <- C.ping (h^.hostAddr)
         if isUp then do
             ctx^.sigMonit $$ HostUp (h^.hostAddr)
-            Logger.info (ctx^.logger) $ msg (val "reachable: " +++ show h)
+            Logger.info (ctx^.logger) $ msg (val "reachable: " +++ h)
         else do
-            Logger.info (ctx^.logger) $ msg (val "unreachable: " +++ show h)
+            Logger.info (ctx^.logger) $ msg (val "unreachable: " +++ h)
             hostCheck (n + 1) mx
 
     maxN :: Int
@@ -352,7 +353,7 @@ replaceControl a = do
     c <- C.connect (s^.connSettings) (ctx^.timeouts) (s^.protoVersion) (ctx^.logger) a
     initialise c
     atomically' $ writeTVar ctl (Control Connected c)
-    info $ msg (val "new control connection: " +++ show c)
+    info $ msg (val "new control connection: " +++ c)
 
 onCqlEvent :: Event -> Client ()
 onCqlEvent x = do
