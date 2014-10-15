@@ -51,11 +51,8 @@ roundRobin = do
             return Nothing
         else do
             k <- readTVar c
-            writeTVar c $ if k < Map.size m - 1 then succ k else 0
-            if k < Map.size m then
-                return . Just . snd $ Map.elemAt k m
-            else
-                return Nothing
+            writeTVar c $ succ k `mod` Map.size m
+            return . Just . snd $ Map.elemAt (k `mod` Map.size m) m
 
 -- | Return hosts in random order.
 random :: IO Policy
