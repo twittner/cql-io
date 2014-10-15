@@ -10,7 +10,6 @@ module Database.CQL.IO.Settings where
 import Control.Lens hiding ((<|))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import Data.Time
-import Data.Int
 import Data.Word
 import Database.CQL.Protocol
 import Database.CQL.IO.Connection
@@ -94,17 +93,10 @@ setCompression v = set (connSettings.compression) v
 
 -- | Maximum streams per connection.
 setMaxStreams :: Int -> Settings -> Settings
-setMaxStreams v s =
-    case s^.protoVersion of
-        V2 | v < 1 || v > mb8  -> error "Database.CQL.IO.Settings: streams must be within [1, 127]"
-        V3 | v < 1 || v > mb16 -> error "Database.CQL.IO.Settings: streams must be within [1, 32767]"
-        _                      -> set (connSettings.maxStreams) v s
-  where
-    mb8 :: Int
-    mb8 = fromIntegral (maxBound :: Int8)
-
-    mb16 :: Int
-    mb16 = fromIntegral (maxBound :: Int16)
+setMaxStreams v s = case s^.protoVersion of
+    V2 | v < 1 || v > 128   -> error "Database.CQL.IO.Settings: max. streams must be within [1, 128]"
+    V3 | v < 1 || v > 32768 -> error "Database.CQL.IO.Settings: max. streams must be within [1, 32768]"
+    _                       -> set (connSettings.maxStreams) v s
 
 setConnectTimeout :: NominalDiffTime -> Settings -> Settings
 setConnectTimeout v = set (connSettings.connectTimeout) (Ms $ round (1000 * v))
