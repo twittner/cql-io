@@ -197,7 +197,7 @@ request c f = send >>= receive
         return i
 
     receive i = do
-        let e = Timeout (show c ++ ":" ++ show i)
+        let e = TimeoutRead (show c ++ ":" ++ show i)
         tid <- myThreadId
         withTimeout (c^.tmanager) (c^.settings.responseTimeout) (throwTo tid e) $ do
             x <- Sync.get (view streams c ! i) `onException` (Sync.kill e) (view streams c ! i)

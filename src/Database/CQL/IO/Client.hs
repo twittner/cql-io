@@ -114,32 +114,43 @@ runClient p a = liftIO $ runReaderT (client a) p
 request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
 request a = do
     s <- ask
-    h <- pickHost (s^.policy)
-    p <- Map.lookup h <$> readTVarIO' (s^.hostmap)
-    case p of
-        Just  x -> action s x `catches` handlers h
-        Nothing -> do
-            err $ msg (val "no pool for host " +++ h)
-            p' <- mkPool (s^.context) (h^.hostAddr)
-            atomically' $ modifyTVar (s^.hostmap) (Map.alter (maybe (Just p') Just) h)
-            request a
+    n <- liftIO $ hostCount (s^.policy)
+    start s n
   where
-    action s p = case s^.context.settings.maxWaitQueue of
-        Nothing -> liftIO $ with p (transaction s)
-        Just  q -> liftIO $ tryWith p (go s) >>= maybe (retry s q p) return
+    start s n = do
+        h <- pickHost (s^.policy)
+        p <- Map.lookup h <$> readTVarIO' (s^.hostmap)
+        case p of
+            Just  x -> action s n x `catches` handlers h
+            Nothing -> do
+                err $ msg (val "no pool for host " +++ h)
+                p' <- mkPool (s^.context) (h^.hostAddr)
+                atomically' $ modifyTVar (s^.hostmap) (Map.alter (maybe (Just p') Just) h)
+                start s n
+
+    action s n p = do
+        res <- tryWith p (go s)
+        case res of
+            Just  r -> return r
+            Nothing ->
+                if n > 0 then
+                    start s (n - 1)
+                else case s^.context.settings.maxWaitQueue of
+                    Nothing -> with p (transaction s)
+                    Just  q -> retry s q p
 
     go s h = do
         atomically $ modifyTVar (s^.failures) $ \n -> if n > 0 then n - 1 else 0
         transaction s h
 
     retry s q p = do
-        n <- atomically $ do
+        n <- atomically' $ do
             n <- readTVar (s^.failures)
             unless (n == q) $
                 writeTVar (s^.failures) (n + 1)
             return n
         unless (n < q) $
-            throwM ConnectionsBusy
+            throwM HostsBusy
         with p (go s)
 
     transaction s c = do

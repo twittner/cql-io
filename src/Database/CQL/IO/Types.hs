@@ -64,9 +64,8 @@ data InvalidSettings
 instance Exception InvalidSettings
 
 instance Show InvalidSettings where
-    show (UnsupportedCompression cc) =
-        "Database.CQL.IO.UnsupportedCompression: " ++ show cc
-    show InvalidCacheSize = "Database.CQL.IO.InvalidCacheSize"
+    show (UnsupportedCompression cc) = "cql-io: unsupported compression: " ++ show cc
+    show InvalidCacheSize            = "cql-io: invalid cache size"
 
 -----------------------------------------------------------------------------
 -- InternalError
@@ -77,46 +76,46 @@ data InternalError = InternalError String
 instance Exception InternalError
 
 instance Show InternalError where
-    show (InternalError e) = "Database.CQL.IO.InternalError: " ++ show e
+    show (InternalError e) = "cql-io: internal error: " ++ show e
 
 -----------------------------------------------------------------------------
 -- HostError
 
 data HostError
     = NoHostAvailable
+    | HostsBusy
     deriving Typeable
 
 instance Exception HostError
 
 instance Show HostError where
-    show NoHostAvailable = "Database.CQL.IO.NoHostAvailable"
+    show NoHostAvailable = "cql-io: no host available"
+    show HostsBusy       = "cql-io: hosts busy"
 
 -----------------------------------------------------------------------------
 -- ConnectionError
 
 data ConnectionError
-    = ConnectionsBusy
-    | ConnectionClosed !InetAddr
-    | ConnectTimeout !InetAddr
+    = ConnectionClosed !InetAddr
+    | ConnectTimeout   !InetAddr
     deriving Typeable
 
 instance Exception ConnectionError
 
 instance Show ConnectionError where
-    show ConnectionsBusy      = "Database.CQL.IO.ConnectionsBusy"
-    show (ConnectionClosed i) = "Database.CQL.IO.ConnectionClosed: " ++ show i
-    show (ConnectTimeout i)   = "Database.CQL.IO.ConnectTimeout: " ++ show i
+    show (ConnectionClosed i) = "cql-io: connection closed: " ++ show i
+    show (ConnectTimeout   i) = "cql-io: connect timeout: " ++ show i
 
 -----------------------------------------------------------------------------
 -- Timeout
 
-data Timeout = Timeout String
+data Timeout = TimeoutRead !String
     deriving Typeable
 
 instance Exception Timeout
 
 instance Show Timeout where
-    show (Timeout e) = "Database.CQL.IO.Timeout: " ++ e
+    show (TimeoutRead e) = "cql-io: read timeout: " ++ e
 
 -----------------------------------------------------------------------------
 -- UnexpectedResponse
@@ -129,8 +128,8 @@ deriving instance Typeable UnexpectedResponse
 instance Exception UnexpectedResponse
 
 instance Show UnexpectedResponse where
-    show UnexpectedResponse      = "Database.CQL.IO.UnexpectedResponse"
-    show (UnexpectedResponse' r) = "Database.CQL.IO.UnexpectedResponse: " ++ show r
+    show UnexpectedResponse      = "cql-io: unexpected response"
+    show (UnexpectedResponse' r) = "cql-io: unexpected response: " ++ show r
 
 ignore :: IO () -> IO ()
 ignore a = catchAll a (const $ return ())

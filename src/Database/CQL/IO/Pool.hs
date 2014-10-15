@@ -30,6 +30,7 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Lens ((^.), makeLenses, view)
+import Control.Monad.IO.Class
 import Control.Monad hiding (forM_, mapM_)
 import Data.Foldable (forM_, mapM_, find)
 import Data.Function (on)
@@ -102,8 +103,8 @@ create mk del g s k = do
 destroy :: Pool -> IO ()
 destroy = purge
 
-with :: Pool -> (Connection -> IO a) -> IO a
-with p f = do
+with :: MonadIO m => Pool -> (Connection -> IO a) -> m a
+with p f = liftIO $ do
     s <- stripe p
     mask $ \restore -> do
         r <- take1 p s
@@ -111,8 +112,8 @@ with p f = do
         put p s r id
         return x
 
-tryWith :: Pool -> (Connection -> IO a) -> IO (Maybe a)
-tryWith p f = do
+tryWith :: MonadIO m => Pool -> (Connection -> IO a) -> m (Maybe a)
+tryWith p f = liftIO $ do
     s <- stripe p
     mask $ \restore -> do
         r <- tryTake1 p s

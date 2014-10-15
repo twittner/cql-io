@@ -15,6 +15,7 @@ import Control.Concurrent.STM
 import Control.Lens ((^.), view, over, makeLenses)
 import Control.Monad
 import Data.Map.Strict (Map)
+import Data.Word
 import Database.CQL.IO.Cluster.Host
 import Database.CQL.IO.Types (InetAddr)
 import System.Random.MWC
@@ -26,6 +27,7 @@ data Policy = Policy
     , onEvent    :: HostEvent -> IO ()
     , select     :: IO (Maybe Host)
     , acceptable :: Host -> IO Bool
+    , hostCount  :: IO Word
     , display    :: IO String
     }
 
@@ -43,7 +45,8 @@ roundRobin :: IO Policy
 roundRobin = do
     h <- newTVarIO emptyHosts
     c <- newTVarIO 0
-    return $ Policy (defSetup h) (defOnEvent h) (pickHost h c) defAcceptable (defDisplay h)
+    return $ Policy (defSetup h) (defOnEvent h) (pickHost h c)
+                    defAcceptable (defHostCount h) (defDisplay h)
   where
     pickHost h c = atomically $ do
         m <- view alive <$> readTVar h
@@ -59,7 +62,8 @@ random :: IO Policy
 random = do
     h <- newTVarIO emptyHosts
     g <- createSystemRandom
-    return $ Policy (defSetup h) (defOnEvent h) (pickHost h g) defAcceptable (defDisplay h)
+    return $ Policy (defSetup h) (defOnEvent h) (pickHost h g)
+                    defAcceptable (defHostCount h) (defDisplay h)
   where
     pickHost h g = do
         m <- view alive <$> readTVarIO h
@@ -87,6 +91,9 @@ defSetup r a b = do
     let hb = Map.fromList $ zip (map (view hostAddr) b) b
     let hosts = Hosts ha hb
     atomically $ writeTVar r hosts
+
+defHostCount :: HostMap -> IO Word
+defHostCount r = fromIntegral . Map.size . view alive <$> readTVarIO r
 
 defOnEvent :: HostMap -> HostEvent -> IO ()
 defOnEvent r (HostNew h) = atomically $ do
