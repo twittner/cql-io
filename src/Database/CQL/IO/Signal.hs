@@ -12,6 +12,7 @@ module Database.CQL.IO.Signal
     ) where
 
 import Control.Applicative
+import Control.Concurrent (forkIO)
 import Data.IORef
 
 newtype Signal a = Sig (IORef [a -> IO ()])
@@ -27,7 +28,7 @@ infixl 2 |->
 (|->) = connect
 
 emit :: Signal a -> a -> IO ()
-emit (Sig s) a = readIORef s >>= mapM_ ($ a)
+emit (Sig s) a = readIORef s >>= mapM_ (forkIO . ($ a))
 
 infixr 1 $$
 ($$) :: Signal a -> a -> IO ()
