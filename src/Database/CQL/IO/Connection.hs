@@ -37,7 +37,7 @@ import Control.Applicative
 import Control.Concurrent (myThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.MVar
-import Control.Exception (throwTo)
+import Control.Exception (throwTo, AsyncException (ThreadKilled))
 import Control.Lens ((^.), makeLenses, view)
 import Control.Monad
 import Control.Monad.Catch
@@ -180,7 +180,9 @@ readLoop v g cmp tck i sck syn s = run `catch` logException `finally` cleanup
         S.close sck
 
     logException :: SomeException -> IO ()
-    logException e = debug g $ msg i ~~ msg (val "read-loop: " +++ show e)
+    logException e = case fromException e of
+        Just ThreadKilled -> return ()
+        _                 -> warn g $ msg i ~~ msg (val "read-loop: " +++ show e)
 
 close :: Connection -> IO ()
 close = cancel . view reader
