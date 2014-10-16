@@ -34,7 +34,7 @@ import Data.Foldable (for_, foldrM)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict (Map)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Word
 import Database.CQL.IO.Cluster.Discovery as Discovery
@@ -383,10 +383,12 @@ onCqlEvent x = do
         StatusEvent Up sa ->
             startMonitor $ (InetAddr $ mapPort prt sa)
         TopologyEvent NewNode sa -> do
-            let a = InetAddr $ mapPort prt sa
-            let h = Host a "" ""
-            hmap <- view hostmap
             ctx  <- view context
+            hmap <- view hostmap
+            ctrl <- readTVarIO' =<< view control
+            let a = InetAddr $ mapPort prt sa
+            let c = ctrl^.connection
+            h    <- fromMaybe (Host a "" "") . find ((a == ) . view hostAddr) <$> discoverPeers ctx c
             okay <- liftIO $ acceptable pol h
             when okay $ do
                 p <- mkPool ctx (h^.hostAddr)
