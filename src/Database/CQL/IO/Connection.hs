@@ -143,7 +143,7 @@ connect t m v g a = liftIO $
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
         lck <- newMVar ()
         sig <- signal
-        rdr <- async (runReader v g (t^.compression) tck a s syn sig)
+        rdr <- async (readLoop v g (t^.compression) tck a s syn sig)
         Connection t a m v s syn lck rdr tck g sig <$> newUnique
 
 mkSock :: InetAddr -> IO Socket
@@ -158,8 +158,8 @@ ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
     fromMaybe False <$> timeout 5000000
         ((S.connect s (sockAddr a) >> return True) `catchAll` const (return False))
 
-runReader :: Version -> Logger -> Compression -> Pool -> InetAddr -> Socket -> Streams -> Signal Event -> IO ()
-runReader v g cmp tck i sck syn s = run `finally` cleanup
+readLoop :: Version -> Logger -> Compression -> Pool -> InetAddr -> Socket -> Streams -> Signal Event -> IO ()
+readLoop v g cmp tck i sck syn s = run `catch` logException `finally` cleanup
   where
     run = forever $ do
         x <- readSocket v g i sck
@@ -179,6 +179,9 @@ runReader v g cmp tck i sck syn s = run `finally` cleanup
         Vector.mapM_ (Sync.close (ConnectionClosed i)) syn
         S.close sck
 
+    logException :: SomeException -> IO ()
+    logException e = debug g $ msg i ~~ msg (val "read-loop: " +++ show e)
+
 close :: Connection -> IO ()
 close = cancel . view reader
 
@@ -188,7 +191,7 @@ request c f = send >>= receive
     send = withTimeout (c^.tmanager) (c^.settings.sendTimeout) (close c) $ do
         i <- toInt <$> Tickets.get (c^.tickets)
         let req = f i
-        trace (c^.logger) $ "socket" .= fd (c^.sock)
+        trace (c^.logger) $ msg c
             ~~ "stream" .= i
             ~~ "type"   .= val "request"
             ~~ msg' (hexdump (L.take 160 req))
@@ -215,7 +218,7 @@ readSocket v g i s = do
         RsHeader -> do
             let len = lengthRepr (bodyLength h)
             x <- recv i (fromIntegral len) s
-            trace g $ "socket" .= fd s
+            trace g $ msg (i +++ val "#" +++ fd s)
                 ~~ "stream" .= fromStreamId (streamId h)
                 ~~ "type"   .= val "response"
                 ~~ msg' (hexdump $ L.take 160 (b <> x))
