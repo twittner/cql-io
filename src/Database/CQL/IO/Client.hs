@@ -377,9 +377,9 @@ onCqlEvent x = do
         TopologyEvent RemovedNode sa -> do
             let a = InetAddr $ mapPort prt sa
             hmap <- view hostmap
-            liftIO $ onEvent pol $ HostGone a
             atomically' $
                 modifyTVar hmap (Map.filterWithKey (\h _ -> h^.hostAddr /= a))
+            liftIO $ onEvent pol $ HostGone a
         StatusEvent Up sa ->
             startMonitor $ (InetAddr $ mapPort prt sa)
         TopologyEvent NewNode sa -> do
@@ -388,7 +388,7 @@ onCqlEvent x = do
             ctrl <- readTVarIO' =<< view control
             let a = InetAddr $ mapPort prt sa
             let c = ctrl^.connection
-            h    <- fromMaybe (Host a "" "") . find ((a == ) . view hostAddr) <$> discoverPeers ctx c
+            h    <- fromMaybe (Host a "" "") . find ((a == ) . view hostAddr) <$> discoverPeers' ctx c
             okay <- liftIO $ acceptable pol h
             when okay $ do
                 p <- mkPool ctx (h^.hostAddr)
@@ -399,6 +399,8 @@ onCqlEvent x = do
     mapPort i (SockAddrInet _ a)      = SockAddrInet i a
     mapPort i (SockAddrInet6 _ f a b) = SockAddrInet6 i f a b
     mapPort _ unix                    = unix
+
+    discoverPeers' ctx c = discoverPeers ctx c `catchAll` (const $ return [])
 
     startMonitor a = do
         hmp <- readTVarIO' =<< view hostmap
