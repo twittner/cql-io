@@ -2,14 +2,36 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+-- | This driver operates on some state which must be initialised prior to
+-- executing client operations and terminated eventually. The library uses
+-- <http://hackage.haskell.org/package/tinylog tinylog> for its logging
+-- output and expects a 'Logger'.
+--
+-- For example:
+--
+-- @
+-- > import Data.Text (Text)
+-- > import Data.Functor.Identity
+-- > import Database.CQL.IO as Client
+-- > import Database.CQL.Protocol
+-- > import qualified System.Logger as Logger
+-- >
+-- > g <- Logger.new Logger.defSettings
+-- > c <- Client.init g defSettings
+-- > let p = QueryParams One False () Nothing Nothing Nothing
+-- > runClient c $ query ("SELECT cql_version from system.local" :: QueryString R () (Identity Text)) p
+-- [Identity "3.2.0"]
+-- > shutdown c
+-- @
+--
 module Database.CQL.IO
-    ( Settings
+    ( -- * Driver settings
+      Settings
     , defSettings
     , addContact
     , setCompression
     , setConnectTimeout
     , setContacts
-    , setEventHandler
     , setIdleTimeout
     , setKeyspace
     , setMaxConnections
@@ -23,6 +45,7 @@ module Database.CQL.IO
     , setResponseTimeout
     , setSendTimeout
 
+      -- * Client monad
     , Client
     , ClientState
     , DebugInfo (..)
@@ -30,14 +53,6 @@ module Database.CQL.IO
     , runClient
     , shutdown
     , debugInfo
-
-    , Policy (..)
-    , random
-    , roundRobin
-
-    , Host
-    , HostEvent (..)
-    , InetAddr  (..)
 
     , query
     , write
@@ -56,6 +71,16 @@ module Database.CQL.IO
 
     , request
     , command
+
+      -- * Policies
+    , Policy (..)
+    , random
+    , roundRobin
+
+      -- ** Host representation
+    , Host
+    , HostEvent (..)
+    , InetAddr  (..)
 
     -- * Exceptions
     , InvalidSettings    (..)

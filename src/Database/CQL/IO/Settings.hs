@@ -16,7 +16,7 @@ import Database.CQL.IO.Connection
 import Database.CQL.IO.Cluster.Policies (Policy, random)
 import Database.CQL.IO.Connection as C
 import Database.CQL.IO.Pool as P
-import Database.CQL.IO.Types (EventHandler, Milliseconds (..))
+import Database.CQL.IO.Types (Milliseconds (..))
 import Network.Socket (PortNumber (..))
 
 data Settings = Settings
@@ -26,12 +26,31 @@ data Settings = Settings
     , _portnumber    :: PortNumber
     , _contacts      :: NonEmpty String
     , _maxWaitQueue  :: Maybe Word64
-    , _eventHandler  :: EventHandler
     , _policyMaker   :: IO Policy
     }
 
 makeLenses ''Settings
 
+-- | Default settings:
+--
+-- * contact point is \"localhost\" port 9042
+--
+-- * load-balancing policy is 'random'
+--
+-- * binary protocol version is 3 (supported by Cassandra >= 2.1.0)
+--
+-- * connection idle timeout is 60s
+--
+-- * the connection pool uses 4 stripes to mitigate thread contention
+--
+-- * connections use a connect timeout of 5s, a send timeout of 3s and
+-- a receive timeout of 10s
+--
+-- * 128 streams per connection are used
+--
+-- * no compression is applied to frame bodies
+--
+-- * no default keyspace is used.
 defSettings :: Settings
 defSettings = Settings
     P.defSettings
@@ -40,72 +59,98 @@ defSettings = Settings
     (fromInteger 9042)
     ("localhost" :| [])
     Nothing
-    (const $ return ())
     random
 
 -----------------------------------------------------------------------------
 -- Settings
 
+-- | Set the binary protocol version to use.
 setProtocolVersion :: Version -> Settings -> Settings
 setProtocolVersion v = set protoVersion v
 
+-- | Set the initial contact points (hosts) from which node discovery will
+-- start.
 setContacts :: String -> [String] -> Settings -> Settings
 setContacts v vv = set contacts (v :| vv)
 
+-- | Add an additional host to the contact list.
 addContact :: String -> Settings -> Settings
 addContact v = over contacts (v <|)
 
+-- | Set the portnumber to use to connect on /every/ node of the cluster.
 setPortNumber :: PortNumber -> Settings -> Settings
 setPortNumber v = set portnumber v
 
-setEventHandler :: EventHandler -> Settings -> Settings
-setEventHandler v = set eventHandler v
-
+-- | Set the load-balancing policy.
 setPolicy :: IO Policy -> Settings -> Settings
 setPolicy v = set policyMaker v
 
+-- | Set the maximum length of the wait queue which is used if
+-- connection pools of all nodes in a cluster are busy. Once the maximum
+-- queue size has been reached, queries will throw a 'HostsBusy' exception
+-- immediatly.
 setMaxWaitQueue :: Word64 -> Settings -> Settings
 setMaxWaitQueue v = set maxWaitQueue (Just v)
 
 -----------------------------------------------------------------------------
 -- Pool Settings
 
+-- | Set the connection idle timeout. Connections in a pool will be closed
+-- if not in use for longer than this timeout.
 setIdleTimeout :: NominalDiffTime -> Settings -> Settings
 setIdleTimeout v = set (poolSettings.idleTimeout) v
 
--- | Maximum connections per pool stripe.
+-- | Maximum connections per pool /stripe/.
 setMaxConnections :: Int -> Settings -> Settings
 setMaxConnections v = set (poolSettings.maxConnections) v
 
+-- | Set the number of pool stripes to use. A good setting is equal to the
+-- number of CPU cores this codes is running on.
 setPoolStripes :: Int -> Settings -> Settings
 setPoolStripes v s
     | v < 1     = error "Database.CQL.IO.Settings: stripes must be greater than 0"
     | otherwise = set (poolSettings.poolStripes) v s
 
+-- | When receiving a response times out, we can no longer use the stream of the
+-- connection that was used to make the request as it is uncertain if
+-- a response will arrive later. Thus the bandwith of a connection will be
+-- decreased. This settings defines a threshold after which we close the
+-- connection to get a new one with all streams available.
 setMaxTimeouts :: Int -> Settings -> Settings
 setMaxTimeouts v = set (poolSettings.maxTimeouts) v
 
 -----------------------------------------------------------------------------
 -- Connection Settings
 
+-- | Set the compression to use for frame body compression.
 setCompression :: Compression -> Settings -> Settings
 setCompression v = set (connSettings.compression) v
 
--- | Maximum streams per connection.
+-- | Set the maximum number of streams per connection. In version 2 of the
+-- binary protocol at most 128 streams can be used. Version 3 supports up
+-- to 32768 streams.
 setMaxStreams :: Int -> Settings -> Settings
 setMaxStreams v s = case s^.protoVersion of
     V2 | v < 1 || v > 128   -> error "Database.CQL.IO.Settings: max. streams must be within [1, 128]"
     V3 | v < 1 || v > 32768 -> error "Database.CQL.IO.Settings: max. streams must be within [1, 32768]"
     _                       -> set (connSettings.maxStreams) v s
 
+-- | Set the connect timeout of a connection.
 setConnectTimeout :: NominalDiffTime -> Settings -> Settings
 setConnectTimeout v = set (connSettings.connectTimeout) (Ms $ round (1000 * v))
 
+-- | Set the send timeout of a connection. Request exceeding the send will
+-- cause the connection to be closed and fail with 'ConnectionClosed'
+-- exception.
 setSendTimeout :: NominalDiffTime -> Settings -> Settings
 setSendTimeout v = set (connSettings.sendTimeout) (Ms $ round (1000 * v))
 
+-- | Set the receive timeout of a connection. Requests exceeding the
+-- receive timeout will fail with a 'Timeout' exception.
 setResponseTimeout :: NominalDiffTime -> Settings -> Settings
 setResponseTimeout v = set (connSettings.responseTimeout) (Ms $ round (1000 * v))
 
+-- | Set the default keyspace to use. Every new connection will be
+-- initialised to use this keyspace.
 setKeyspace :: Keyspace -> Settings -> Settings
 setKeyspace v = set (connSettings.defKeyspace) (Just v)

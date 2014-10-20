@@ -1,19 +1,35 @@
 name:                 cql-io
 version:              0.9.5
-synopsis:             CQL client
+synopsis:             Cassandra CQL client.
 stability:            experimental
 license:              OtherLicense
 license-file:         LICENSE
 author:               Toralf Wittner
 maintainer:           Toralf Wittner <tw@dtex.org>
 copyright:            (c) 2014 Toralf Wittner
+homepage:             https://github.com/twittner/cql-io/
+bug-reports:          https://github.com/twittner/cql-io/issues
 category:             Database
 build-type:           Simple
 cabal-version:        >= 1.10
 extra-source-files:   README.md
 
 description:
-    CQL Client.
+    CQL Cassandra driver supporting native protocol versions 2 and 3.
+    .
+    This library uses <http://hackage.haskell.org/package/cql cql> which
+    implements Cassandra's CQL protocol and complements it with the
+    neccessary I/O operations. The feature-set includes:
+    .
+    * __Node discovery__. The driver discovers nodes automatically from a small
+    set of bootstrap nodes.
+    .
+    * __Customisable load-balancing policies__. In addition to pre-built LB
+    policies such as round-robin, users of this library can provide their
+    own policies if desired.
+    .
+    * __Support for connection streams__. Requests can be multiplexed over a
+    few connections.
 
 source-repository head
     type:             git
