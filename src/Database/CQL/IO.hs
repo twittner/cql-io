@@ -25,7 +25,7 @@
 -- @
 --
 module Database.CQL.IO
-    ( -- * Driver settings
+    ( -- * Client settings
       Settings
     , defSettings
     , addContact
@@ -57,18 +57,9 @@ module Database.CQL.IO
     , query
     , write
     , schema
-
-    , prepare
-    , prepareWrite
-    , prepareSchema
-
-    , execute
-    , executeWrite
-    , executeSchema
-
-    , register
     , batch
 
+      -- ** low-level
     , request
     , command
 
@@ -77,10 +68,13 @@ module Database.CQL.IO
     , random
     , roundRobin
 
-      -- ** Host representation
+      -- ** Hosts
     , Host
     , HostEvent (..)
     , InetAddr  (..)
+    , hostAddr
+    , dataCentre
+    , rack
 
     -- * Exceptions
     , InvalidSettings    (..)
@@ -101,87 +95,34 @@ import Database.CQL.IO.Settings
 import Database.CQL.IO.Types
 import Prelude hiding (init)
 
-------------------------------------------------------------------------------
--- query
-
-query' :: (Tuple a, Tuple b) => QueryString k a b -> QueryParams a -> Client (Response k a b)
-query' q p = do
+runQuery :: (Tuple a, Tuple b) => QueryString k a b -> QueryParams a -> Client (Response k a b)
+runQuery q p = do
     r <- request (RqQuery (Query q p))
     case r of
         RsError _ e -> throwM e
         _           -> return r
 
+-- | Run a CQL read-only query against a Cassandra node.
 query :: (Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> Client [b]
 query q p = do
-    r <- query' q p
+    r <- runQuery q p
     case r of
         RsResult _ (RowsResult _ b) -> return b
         _                           -> throwM UnexpectedResponse
 
+-- | Run a CQL insert/update query against a Cassandra node.
 write :: Tuple a => QueryString W a () -> QueryParams a -> Client ()
-write q p = void $ query' q p
+write q p = void $ runQuery q p
 
+-- | Run a CQL schema query against a Cassandra node.
 schema :: Tuple a => QueryString S a () -> QueryParams a -> Client (Maybe SchemaChange)
 schema x y = do
-    r <- query' x y
+    r <- runQuery x y
     case r of
         RsResult _ (SchemaChangeResult s) -> return $ Just s
         RsResult _ VoidResult             -> return Nothing
         _                                 -> throwM UnexpectedResponse
 
-------------------------------------------------------------------------------
--- prepare
-
-prepare' :: (Tuple a, Tuple b) => QueryString k a b -> Client (QueryId k a b)
-prepare' q = do
-    r <- request (RqPrepare (Prepare q))
-    case r of
-        RsResult _ (PreparedResult i _ _) -> return i
-        RsError  _ e                      -> throwM e
-        _                                 -> throwM UnexpectedResponse
-
-prepare :: (Tuple a, Tuple b) => QueryString R a b -> Client (QueryId R a b)
-prepare = prepare'
-
-prepareWrite :: Tuple a => QueryString W a () -> Client (QueryId W a ())
-prepareWrite = prepare'
-
-prepareSchema :: Tuple a => QueryString S a () -> Client (QueryId S a ())
-prepareSchema = prepare'
-
-------------------------------------------------------------------------------
--- execute
-
-execute' :: (Tuple a, Tuple b) => QueryId k a b -> QueryParams a -> Client (Response k a b)
-execute' q p = do
-    r <- request (RqExecute (Execute q p))
-    case r of
-        RsError  _ e -> throwM e
-        _            -> return r
-
-execute :: (Tuple a, Tuple b) => QueryId R a b -> QueryParams a -> Client [b]
-execute q p = do
-    r <- execute' q p
-    case r of
-        RsResult _ (RowsResult _ b) -> return b
-        _                           -> throwM UnexpectedResponse
-
-executeWrite :: Tuple a => QueryId W a () -> QueryParams a -> Client ()
-executeWrite q p = void $ execute' q p
-
-executeSchema :: Tuple a => QueryId S a () -> QueryParams a -> Client (Maybe SchemaChange)
-executeSchema q p = do
-    r <- execute' q p
-    case r of
-        RsResult _ (SchemaChangeResult s) -> return $ Just s
-        RsResult _ VoidResult             -> return Nothing
-        _                                 -> throwM UnexpectedResponse
-
+-- | Run a batch query against a Cassandra node.
 batch :: Batch -> Client ()
 batch b = command (RqBatch b)
-
-------------------------------------------------------------------------------
--- register
-
-register :: [EventType] -> Client ()
-register = command . RqRegister . Register

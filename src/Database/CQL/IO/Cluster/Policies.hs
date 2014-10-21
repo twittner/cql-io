@@ -22,13 +22,32 @@ import System.Random.MWC
 
 import qualified Data.Map.Strict as Map
 
+-- | A policy defines a load-balancing strategy and generally
+-- handles host visibility.
 data Policy = Policy
-    { setup      :: [Host] -> [Host] -> IO ()
+    { setup :: [Host] -> [Host] -> IO ()
+      -- ^ Initialise the policy with two sets of hosts. The first
+      -- parameter are hosts known to be available, the second are other
+      -- nodes.
+      -- Please note that a policy may be re-initialised at any point
+      -- through this method.
     , onEvent    :: HostEvent -> IO ()
+      -- ^ Event handler. Policies will be informed about cluster changes
+      -- through this function.
     , select     :: IO (Maybe Host)
+      -- ^ Host selection. The driver will ask for a host to use in a query
+      -- through this function. A policy which has no available nodes my
+      -- return Nothing.
     , acceptable :: Host -> IO Bool
+      -- ^ During startup and node discovery, the driver will ask the
+      -- policy if a dicovered host should be ignored.
     , hostCount  :: IO Word
+      -- ^ During query processing, the driver will ask the policy for
+      -- a rough esitimate of alive hosts. The number is used to repeatedly
+      -- invoke 'select' (with the underlying assumption that the policy
+      -- returns mostly different hosts).
     , display    :: IO String
+      -- ^ Like having an effectful 'Show' instance for this policy.
     }
 
 type HostMap = TVar Hosts
@@ -40,7 +59,7 @@ data Hosts = Hosts
 
 makeLenses ''Hosts
 
--- | Iterate over all hosts.
+-- | Iterate over hosts one by one.
 roundRobin :: IO Policy
 roundRobin = do
     h <- newTVarIO emptyHosts

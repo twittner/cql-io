@@ -77,6 +77,7 @@ data Context = Context
     , _sigMonit :: Signal HostEvent
     }
 
+-- | Opaque client state/environment.
 data ClientState = ClientState
     { _context  :: Context
     , _policy   :: Policy
@@ -90,6 +91,15 @@ makeLenses ''Control
 makeLenses ''Context
 makeLenses ''ClientState
 
+-- | The Client monad.
+--
+-- A simple reader monad around some internal state. Prior to executing
+-- this monad via 'runClient', its state must be initialised through
+-- 'Database.CQL.IO.Client.init' and after finishing operation it should be
+-- terminated with 'shutdown'.
+--
+-- Actual CQL queries are handled by invoking 'request' oder 'command'.
+-- Additionally 'debugInfo' returns an internal cluster view.
 newtype Client a = Client
     { client :: ReaderT ClientState IO a
     } deriving ( Functor
@@ -108,9 +118,19 @@ instance MonadLogger Client where
 -----------------------------------------------------------------------------
 -- API
 
+-- | Execute the client monad.
 runClient :: MonadIO m => ClientState -> Client a -> m a
 runClient p a = liftIO $ runReaderT (client a) p
 
+-- | Send a CQL 'Request' to the server and return a 'Response'.
+--
+-- This function will first ask the clients load-balancing 'Policy' for
+-- some host and use its connection pool to acquire a connection for
+-- request transmission.
+--
+-- If all available hosts are busy (i.e. their connection pools are fully
+-- utilised), the function will block until a connection becomes available
+-- or the maximum wait-queue length has been reached.
 request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
 request a = do
     s <- ask
@@ -166,13 +186,14 @@ request a = do
 
     pickHost p = maybe (throwM NoHostAvailable) return =<< liftIO (select p)
 
+-- | Like 'request' but not returning any result.
 command :: Request k () () -> Client ()
 command = void . request
 
 data DebugInfo = DebugInfo
-    { policyInfo :: String
-    , jobInfo    :: [InetAddr]
-    , hostInfo   :: [Host]
+    { policyInfo :: String     -- ^ 'Policy' string representation
+    , jobInfo    :: [InetAddr] -- ^ hosts currently checked for reachability
+    , hostInfo   :: [Host]     -- ^ all known hosts
     }
 
 instance Show DebugInfo where
@@ -194,6 +215,8 @@ debugInfo = do
 -----------------------------------------------------------------------------
 -- Initialisation
 
+-- | Initialise client state with the given 'Settings' using the provided
+-- 'Logger' for all it's logging output.
 init :: MonadIO m => Logger -> Settings -> m ClientState
 init g s = liftIO $ do
     t <- TM.create 250
@@ -282,6 +305,8 @@ mkPool ctx i = liftIO $ do
 -----------------------------------------------------------------------------
 -- Termination
 
+-- | Terminate client state, i.e. end all running background checks and
+-- shutdown all connection pools.
 shutdown :: MonadIO m => ClientState -> m ()
 shutdown s = liftIO $ do
     TM.destroy (s^.context.timeouts) True

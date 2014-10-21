@@ -17,8 +17,8 @@ extra-source-files:   README.md
 description:
     CQL Cassandra driver supporting native protocol versions 2 and 3.
     .
-    This library uses <http://hackage.haskell.org/package/cql cql> which
-    implements Cassandra's CQL protocol and complements it with the
+    This library uses the <http://hackage.haskell.org/package/cql cql> library
+    which implements Cassandra's CQL protocol and complements it with the
     neccessary I/O operations. The feature-set includes:
     .
     * __Node discovery__. The driver discovers nodes automatically from a small
