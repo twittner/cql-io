@@ -24,6 +24,9 @@
 -- > shutdown c
 -- @
 --
+
+{-# LANGUAGE DeriveFunctor #-}
+
 module Database.CQL.IO
     ( -- * Client settings
       Settings
@@ -59,6 +62,10 @@ module Database.CQL.IO
     , schema
     , batch
 
+    , Page      (..)
+    , emptyPage
+    , paginate
+
       -- ** low-level
     , request
     , command
@@ -85,8 +92,10 @@ module Database.CQL.IO
     , Timeout            (..)
     ) where
 
+import Control.Applicative
 import Control.Monad.Catch
 import Control.Monad (void)
+import Data.Maybe (isJust)
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
 import Database.CQL.IO.Cluster.Host
@@ -126,3 +135,37 @@ schema x y = do
 -- | Run a batch query against a Cassandra node.
 batch :: Batch -> Client ()
 batch b = command (RqBatch b)
+
+-- | Return value of 'paginate'. Contains the actual result values as well
+-- as an indication of whether there is more data available and the actual
+-- action to fetch the next page.
+data Page a = Page
+    { hasMore  :: !Bool
+    , result   :: [a]
+    , nextPage :: Client (Page a)
+    } deriving (Functor)
+
+-- | A page with an empty result list.
+emptyPage :: Page a
+emptyPage = Page False [] (return emptyPage)
+
+-- | Run a CQL read-only query against a Cassandra node.
+--
+-- This function is like 'query', but limits the result size to 10000
+-- (default) unless there is an explicit size restriction given in
+-- 'QueryParams'. The returned 'Page' can be used to continue the query.
+--
+-- Please note that -- as of Cassandra 2.1.0 -- if your requested page size
+-- is equal to the result size, 'hasMore' might be true and a subsequent
+-- 'nextPage' will return an empty list in 'result'.
+paginate :: (Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> Client (Page b)
+paginate q p = do
+    let p' = p { pageSize = pageSize p <|> Just 10000 }
+    r <- runQuery q p'
+    case r of
+        RsResult _ (RowsResult m b) ->
+            if isJust (pagingState m) then
+                return $ Page True b (paginate q p' { queryPagingState = pagingState m })
+            else
+                return $ Page False b (return emptyPage)
+        _ -> throwM UnexpectedResponse
