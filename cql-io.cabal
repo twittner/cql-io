@@ -12,7 +12,7 @@ bug-reports:          https://github.com/twittner/cql-io/issues
 category:             Database
 build-type:           Simple
 cabal-version:        >= 1.10
-extra-source-files:   README.md
+extra-source-files:   README.md, CHANGELOG.md
 
 description:
     CQL Cassandra driver supporting native protocol versions 2 and 3.
