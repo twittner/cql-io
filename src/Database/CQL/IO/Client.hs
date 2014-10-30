@@ -145,7 +145,7 @@ request a = do
             Nothing -> do
                 err $ msg (val "no pool for host " +++ h)
                 p' <- mkPool (s^.context) (h^.hostAddr)
-                atomically' $ modifyTVar (s^.hostmap) (Map.alter (maybe (Just p') Just) h)
+                atomically' $ modifyTVar' (s^.hostmap) (Map.alter (maybe (Just p') Just) h)
                 start s n
 
     action s n p = do
@@ -160,7 +160,7 @@ request a = do
                     Just  q -> retry s q p
 
     go s h = do
-        atomically $ modifyTVar (s^.failures) $ \n -> if n > 0 then n - 1 else 0
+        atomically $ modifyTVar' (s^.failures) $ \n -> if n > 0 then n - 1 else 0
         transaction s h
 
     retry s q p = do
@@ -366,7 +366,7 @@ onConnectionError h exc = do
         case x of
             Just  a -> a `tryAll` (runClient e . replaceControl) `onException` reconnect e a
             Nothing -> do
-                atomically $ modifyTVar (e^.control) (set state Disconnected)
+                atomically $ modifyTVar' (e^.control) (set state Disconnected)
                 Logger.fatal (e^.context.logger) $ "error-handler" .= val "no host available"
 
     reconnect e a = do
@@ -403,7 +403,7 @@ onCqlEvent x = do
             let a = InetAddr $ mapPort prt sa
             hmap <- view hostmap
             atomically' $
-                modifyTVar hmap (Map.filterWithKey (\h _ -> h^.hostAddr /= a))
+                modifyTVar' hmap (Map.filterWithKey (\h _ -> h^.hostAddr /= a))
             liftIO $ onEvent pol $ HostGone a
         StatusEvent Up sa ->
             startMonitor $ (InetAddr $ mapPort prt sa)
@@ -417,7 +417,7 @@ onCqlEvent x = do
             okay <- liftIO $ acceptable pol h
             when okay $ do
                 p <- mkPool ctx (h^.hostAddr)
-                atomically' $ modifyTVar hmap (Map.alter (maybe (Just p) Just) h)
+                atomically' $ modifyTVar' hmap (Map.alter (maybe (Just p) Just) h)
                 liftIO $ onEvent pol $ HostNew h
         SchemaEvent _ -> return ()
   where

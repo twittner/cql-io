@@ -156,7 +156,7 @@ take1 p s = do
            | otherwise                      -> retry
     case r of
         Left  x -> do
-            atomically (modifyTVar (conns s) (|> x))
+            atomically (modifyTVar' (conns s) (|> x))
             return x
         Right x -> return x
 
@@ -172,7 +172,7 @@ tryTake1 p s = do
            | otherwise                      -> return (return Nothing)
     case r of
         Just (Left  x) -> do
-            atomically (modifyTVar (conns s) (|> x))
+            atomically (modifyTVar' (conns s) (|> x))
             return (Just x)
         Just (Right x) -> return (Just x)
         Nothing        -> return Nothing
@@ -188,7 +188,7 @@ mkNew p s u = do
     writeTVar (inUse s) $! u + 1
     return $ Left <$> onException
         (Resource <$> p^.currentTime <*> pure 1 <*> pure 0 <*> p^.createFn)
-        (atomically (modifyTVar (inUse s) (subtract 1)))
+        (atomically (modifyTVar' (inUse s) (subtract 1)))
 {-# INLINE mkNew #-}
 
 put :: Pool -> Stripe -> Resource -> (Resource -> Resource) -> IO ()
@@ -209,7 +209,7 @@ destroyR p s r = do
         case find ((value r ==) . value) rs of
             Nothing -> return ()
             Just  _ -> do
-                modifyTVar (inUse s) (subtract 1)
+                modifyTVar' (inUse s) (subtract 1)
                 writeTVar (conns s) $! Seq.filter ((value r /=) . value) rs
     ignore $ p^.destroyFn $ value r
 
@@ -222,8 +222,8 @@ reaper p = forever $ do
         x <- atomically $ do
                 (stale, okay) <- Seq.partition isStale <$> readTVar (conns s)
                 unless (Seq.null stale) $ do
-                    writeTVar  (conns s) okay
-                    modifyTVar (inUse s) (subtract (Seq.length stale))
+                    writeTVar   (conns s) okay
+                    modifyTVar' (inUse s) (subtract (Seq.length stale))
                 return stale
         forM_ x $ \v -> ignore $ do
             trace (p^.logger) $ "reap" .= show (value v)
