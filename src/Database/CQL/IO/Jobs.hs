@@ -38,20 +38,20 @@ add (Jobs d) k j = liftIO $ do
         case Map.lookup k m of
             Just Reserved      -> return (False, Nothing)
             Just (Running _ a) -> do
-                modifyTVar d (Map.insert k Reserved)
+                modifyTVar' d (Map.insert k Reserved)
                 return (True, Just a)
             Nothing          -> do
-                modifyTVar d (Map.insert k Reserved)
+                modifyTVar' d (Map.insert k Reserved)
                 return (True, Nothing)
     when ok $ do
         maybe (return ()) (ignore . cancel) prev
         u <- newUnique
         a <- async $ j `finally` remove u
         atomically $
-            modifyTVar d (Map.insert k (Running u a))
+            modifyTVar' d (Map.insert k (Running u a))
   where
     remove u = atomically $
-        modifyTVar d $ flip Map.update k $ \a ->
+        modifyTVar' d $ flip Map.update k $ \a ->
             case a of
                 Running u' _ | u == u' -> Nothing
                 _                      -> Just a
