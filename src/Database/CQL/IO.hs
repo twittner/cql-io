@@ -54,10 +54,12 @@ module Database.CQL.IO
     , DebugInfo (..)
     , init
     , runClient
+    , retry
     , shutdown
     , debugInfo
 
     , query
+    , query1
     , write
     , schema
     , batch
@@ -69,6 +71,18 @@ module Database.CQL.IO
       -- ** low-level
     , request
     , command
+
+      -- * Retry Settings
+    , RetrySettings
+    , noRetry
+    , retryForever
+    , maxRetries
+    , adjustConsistency
+    , constDelay
+    , expBackoff
+    , fibBackoff
+    , adjustSendTimeout
+    , adjustResponseTimeout
 
       -- * Policies
     , Policy (..)
@@ -95,7 +109,7 @@ module Database.CQL.IO
 import Control.Applicative
 import Control.Monad.Catch
 import Control.Monad (void)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, listToMaybe)
 import Database.CQL.Protocol
 import Database.CQL.IO.Client
 import Database.CQL.IO.Cluster.Host
@@ -118,6 +132,10 @@ query q p = do
     case r of
         RsResult _ (RowsResult _ b) -> return b
         _                           -> throwM UnexpectedResponse
+
+-- | Run a CQL read-only query against a Cassandra node.
+query1 :: (Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> Client (Maybe b)
+query1 q p = listToMaybe <$> query q p
 
 -- | Run a CQL insert/update query against a Cassandra node.
 write :: Tuple a => QueryString W a () -> QueryParams a -> Client ()

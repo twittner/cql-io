@@ -8,7 +8,9 @@
 module Database.CQL.IO.Settings where
 
 import Control.Lens hiding ((<|))
+import Control.Retry
 import Data.List.NonEmpty (NonEmpty (..), (<|))
+import Data.Monoid
 import Data.Time
 import Data.Word
 import Database.CQL.Protocol
@@ -154,3 +156,67 @@ setResponseTimeout v = set (connSettings.responseTimeout) (Ms $ round (1000 * v)
 -- initialised to use this keyspace.
 setKeyspace :: Keyspace -> Settings -> Settings
 setKeyspace v = set (connSettings.defKeyspace) (Just v)
+
+-----------------------------------------------------------------------------
+-- Retry Settings
+
+type Delay = NominalDiffTime
+
+data RetrySettings = RetrySettings
+    { _retryPolicy        :: RetryPolicy
+    , _reducedConsistency :: Maybe Consistency
+    , _sendTimeoutChange  :: Milliseconds
+    , _recvTimeoutChange  :: Milliseconds
+    }
+
+makeLenses ''RetrySettings
+
+-- | Never retry.
+noRetry :: RetrySettings
+noRetry = RetrySettings (RetryPolicy $ const Nothing) Nothing 0 0
+
+-- | Forever retry immediately.
+retryForever :: RetrySettings
+retryForever = RetrySettings mempty Nothing 0 0
+
+-- | Limit number of retries.
+maxRetries :: Word -> RetrySettings -> RetrySettings
+maxRetries v = over retryPolicy (mappend (limitRetries $ fromIntegral v))
+
+-- | When retrying a (batch-) query, change consistency to the given value.
+adjustConsistency :: Consistency -> RetrySettings -> RetrySettings
+adjustConsistency v = set reducedConsistency (Just v)
+
+-- | Wait a fixed number of milliseconds between retries.
+constDelay :: Delay -> RetrySettings -> RetrySettings
+constDelay v = setDelayFn constantDelay v v
+
+-- | Delay retries with exponential backoff.
+expBackoff :: Delay
+           -- ^ Initial delay.
+           -> Delay
+           -- ^ Maximum delay.
+           -> RetrySettings
+           -> RetrySettings
+expBackoff = setDelayFn exponentialBackoff
+
+-- | Delay retries using Fibonacci sequence as backoff.
+fibBackoff :: Delay
+           -- ^ Initial delay.
+           -> Delay
+           -- ^ Maximum delay.
+           -> RetrySettings
+           -> RetrySettings
+fibBackoff = setDelayFn fibonacciBackoff
+
+-- | On retry adjust the send timeout by the given number of milliseconds.
+adjustSendTimeout :: NominalDiffTime -> RetrySettings -> RetrySettings
+adjustSendTimeout v = set sendTimeoutChange (Ms $ round (1000 * v))
+
+-- | On retry adjust the response timeout by the given number of milliseconds.
+adjustResponseTimeout :: NominalDiffTime -> RetrySettings -> RetrySettings
+adjustResponseTimeout v = set recvTimeoutChange (Ms $ round (1000 * v))
+
+setDelayFn :: (Int -> RetryPolicy) -> Delay -> Delay -> RetrySettings -> RetrySettings
+setDelayFn d v w = over retryPolicy
+    (mappend $ capDelay (round (1000 * w)) $ d (round (1000 * v)))

@@ -16,6 +16,7 @@ module Database.CQL.IO.Client
     , shutdown
     , request
     , command
+    , retry
     , debugInfo
     ) where
 
@@ -52,6 +53,7 @@ import Database.CQL.Protocol hiding (Map)
 import Network.Socket (SockAddr (..), PortNumber)
 import System.Logger.Class hiding (Settings, new, settings, create)
 
+import qualified Control.Monad.Reader       as Reader
 import qualified Data.List.NonEmpty         as NE
 import qualified Data.Map.Strict            as Map
 import qualified Database.CQL.IO.Connection as C
@@ -71,10 +73,11 @@ data Control = Control
     }
 
 data Context = Context
-    { _settings :: Settings
-    , _logger   :: Logger
-    , _timeouts :: TimeoutManager
-    , _sigMonit :: Signal HostEvent
+    { _settings      :: Settings
+    , _retrySettings :: RetrySettings
+    , _logger        :: Logger
+    , _timeouts      :: TimeoutManager
+    , _sigMonit      :: Signal HostEvent
     }
 
 -- | Opaque client state/environment.
@@ -122,6 +125,10 @@ instance MonadLogger Client where
 runClient :: MonadIO m => ClientState -> Client a -> m a
 runClient p a = liftIO $ runReaderT (client a) p
 
+-- | Use given 'RetrySettings' during execution of some client action.
+retry :: RetrySettings -> Client a -> Client a
+retry r = Reader.local (set (context.retrySettings) r)
+
 -- | Send a CQL 'Request' to the server and return a 'Response'.
 --
 -- This function will first ask the clients load-balancing 'Policy' for
@@ -135,45 +142,77 @@ request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
 request a = do
     s <- ask
     n <- liftIO $ hostCount (s^.policy)
-    start s n
+    recovering (s^.context.retrySettings.retryPolicy) recoverFrom $ \i ->
+        if i == 0 then
+            getResponse a s n
+        else let s' = adjust s in
+            getResponse (newRequest s) s' n
   where
-    start s n = do
-        h <- pickHost (s^.policy)
-        p <- Map.lookup h <$> readTVarIO' (s^.hostmap)
-        case p of
-            Just  x -> action s n x `catches` handlers h
-            Nothing -> do
-                err $ msg (val "no pool for host " +++ h)
-                p' <- mkPool (s^.context) (h^.hostAddr)
-                atomically' $ modifyTVar' (s^.hostmap) (Map.alter (maybe (Just p') Just) h)
-                start s n
+    adjust s =
+        let x = s^.context.retrySettings.sendTimeoutChange
+            y = s^.context.retrySettings.recvTimeoutChange
+        in over (context.settings.connSettings.sendTimeout)     (+ x)
+         . over (context.settings.connSettings.responseTimeout) (+ y)
+         $ s
 
-    action s n p = do
-        res <- tryWith p (go s)
+    newRequest s =
+        case s^.context.retrySettings.reducedConsistency of
+            Nothing -> a
+            Just  c ->
+                case a of
+                    RqQuery (Query q p) -> RqQuery (Query q p { consistency = c })
+                    RqBatch b           -> RqBatch b { batchConsistency = c }
+                    _                   -> a
+
+    recoverFrom =
+        [ const $ Handler $ \e -> case e of
+            ReadTimeout  {} -> return True
+            WriteTimeout {} -> return True
+            Overloaded   {} -> return True
+            Unavailable  {} -> return True
+            ServerError  {} -> return True
+            _               -> return False
+        , const $ Handler $ \(_ :: ConnectionError) -> return True
+        ]
+
+getResponse :: (Tuple a, Tuple b) => Request k a b -> ClientState -> Word -> Client (Response k a b)
+getResponse a s n = do
+    h <- pickHost (s^.policy)
+    p <- Map.lookup h <$> readTVarIO' (s^.hostmap)
+    case p of
+        Just  x -> action x `catches` handlers h
+        Nothing -> do
+            err $ msg (val "no pool for host " +++ h)
+            p' <- mkPool (s^.context) (h^.hostAddr)
+            atomically' $ modifyTVar' (s^.hostmap) (Map.alter (maybe (Just p') Just) h)
+            getResponse a s n
+  where
+    action p = do
+        res <- tryWith p go
         case res of
             Just  r -> return r
             Nothing ->
                 if n > 0 then
-                    start s (n - 1)
+                    getResponse a s (n - 1)
                 else case s^.context.settings.maxWaitQueue of
-                    Nothing -> with p (transaction s)
-                    Just  q -> retry s q p
+                    Nothing -> with p transaction
+                    Just  q -> again q p
 
-    go s h = do
-        atomically $ modifyTVar' (s^.failures) $ \n -> if n > 0 then n - 1 else 0
-        transaction s h
+    go h = do
+        atomically $ modifyTVar' (s^.failures) $ \x -> if x > 0 then x - 1 else 0
+        transaction h
 
-    retry s q p = do
-        n <- atomically' $ do
-            n <- readTVar (s^.failures)
-            unless (n == q) $
-                writeTVar (s^.failures) (n + 1)
-            return n
-        unless (n < q) $
+    again q p = do
+        k <- atomically' $ do
+            k <- readTVar (s^.failures)
+            unless (k == q) $
+                writeTVar (s^.failures) (k + 1)
+            return k
+        unless (k < q) $
             throwM HostsBusy
-        with p (go s)
+        with p go
 
-    transaction s c = do
+    transaction c = do
         let x = s^.context.settings.connSettings.compression
         let v = s^.context.settings.protoVersion
         r <- parse x <$> C.request c (serialise v x a)
@@ -221,7 +260,7 @@ init :: MonadIO m => Logger -> Settings -> m ClientState
 init g s = liftIO $ do
     t <- TM.create 250
     c <- tryAll (s^.contacts) (mkConnection t)
-    e <- Context s g t <$> signal
+    e <- Context s noRetry g t <$> signal
     p <- s^.policyMaker
     x <- ClientState e
             <$> pure p
@@ -353,7 +392,7 @@ onConnectionError h exc = do
         else
             return Nothing
     maybe (liftIO . ignore . onEvent (e^.policy) $ HostDown (h^.hostAddr))
-          (liftIO . void . async . recovering reconnectPolicy reconnectHandlers . continue e)
+          (liftIO . void . async . recovering reconnectPolicy reconnectHandlers . const . continue e)
           c
     Jobs.add (e^.jobs) (h^.hostAddr) $
         monitor (e^.context) 0 30000000 h
