@@ -160,8 +160,6 @@ setKeyspace v = set (connSettings.defKeyspace) (Just v)
 -----------------------------------------------------------------------------
 -- Retry Settings
 
-type Delay = NominalDiffTime
-
 data RetrySettings = RetrySettings
     { _retryPolicy        :: RetryPolicy
     , _reducedConsistency :: Maybe Consistency
@@ -188,22 +186,22 @@ adjustConsistency :: Consistency -> RetrySettings -> RetrySettings
 adjustConsistency v = set reducedConsistency (Just v)
 
 -- | Wait a fixed number of milliseconds between retries.
-constDelay :: Delay -> RetrySettings -> RetrySettings
+constDelay :: NominalDiffTime -> RetrySettings -> RetrySettings
 constDelay v = setDelayFn constantDelay v v
 
 -- | Delay retries with exponential backoff.
-expBackoff :: Delay
+expBackoff :: NominalDiffTime
            -- ^ Initial delay.
-           -> Delay
+           -> NominalDiffTime
            -- ^ Maximum delay.
            -> RetrySettings
            -> RetrySettings
 expBackoff = setDelayFn exponentialBackoff
 
 -- | Delay retries using Fibonacci sequence as backoff.
-fibBackoff :: Delay
+fibBackoff :: NominalDiffTime
            -- ^ Initial delay.
-           -> Delay
+           -> NominalDiffTime
            -- ^ Maximum delay.
            -> RetrySettings
            -> RetrySettings
@@ -217,6 +215,10 @@ adjustSendTimeout v = set sendTimeoutChange (Ms $ round (1000 * v))
 adjustResponseTimeout :: NominalDiffTime -> RetrySettings -> RetrySettings
 adjustResponseTimeout v = set recvTimeoutChange (Ms $ round (1000 * v))
 
-setDelayFn :: (Int -> RetryPolicy) -> Delay -> Delay -> RetrySettings -> RetrySettings
+setDelayFn :: (Int -> RetryPolicy)
+           -> NominalDiffTime
+           -> NominalDiffTime
+           -> RetrySettings
+           -> RetrySettings
 setDelayFn d v w = over retryPolicy
     (mappend $ capDelay (round (1000 * w)) $ d (round (1000 * v)))

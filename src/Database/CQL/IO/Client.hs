@@ -119,9 +119,12 @@ newtype Client a = Client
 instance MonadLogger Client where
     log l m = view (context.logger) >>= \g -> Logger.log g l m
 
+-- | Monads in which 'Client' actions may be embedded.
 class (Functor m, Applicative m, Monad m, MonadIO m, MonadCatch m) => MonadClient m
   where
+    -- | Lift a computation to the 'Client' monad.
     liftClient :: Client a -> m a
+    -- | Execute an action with a modified 'ClientState'.
     localState :: (ClientState -> ClientState) -> m a -> m a
 
 instance MonadClient Client where
