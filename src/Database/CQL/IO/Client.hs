@@ -9,8 +9,9 @@
 
 module Database.CQL.IO.Client
     ( Client
+    , MonadClient (..)
     , ClientState
-    , DebugInfo (..)
+    , DebugInfo   (..)
     , runClient
     , Database.CQL.IO.Client.init
     , shutdown
@@ -118,6 +119,15 @@ newtype Client a = Client
 instance MonadLogger Client where
     log l m = view (context.logger) >>= \g -> Logger.log g l m
 
+class (Functor m, Applicative m, Monad m, MonadIO m, MonadCatch m) => MonadClient m
+  where
+    liftClient :: Client a -> m a
+    localState :: (ClientState -> ClientState) -> m a -> m a
+
+instance MonadClient Client where
+    liftClient = id
+    localState = Reader.local
+
 -----------------------------------------------------------------------------
 -- API
 
@@ -126,8 +136,8 @@ runClient :: MonadIO m => ClientState -> Client a -> m a
 runClient p a = liftIO $ runReaderT (client a) p
 
 -- | Use given 'RetrySettings' during execution of some client action.
-retry :: RetrySettings -> Client a -> Client a
-retry r = Reader.local (set (context.retrySettings) r)
+retry :: MonadClient m => RetrySettings -> m a -> m a
+retry r = localState (set (context.retrySettings) r)
 
 -- | Send a CQL 'Request' to the server and return a 'Response'.
 --
@@ -138,8 +148,8 @@ retry r = Reader.local (set (context.retrySettings) r)
 -- If all available hosts are busy (i.e. their connection pools are fully
 -- utilised), the function will block until a connection becomes available
 -- or the maximum wait-queue length has been reached.
-request :: (Tuple a, Tuple b) => Request k a b -> Client (Response k a b)
-request a = do
+request :: (MonadClient m, Tuple a, Tuple b) => Request k a b -> m (Response k a b)
+request a = liftClient $ do
     s <- ask
     n <- liftIO $ hostCount (s^.policy)
     recovering (s^.context.retrySettings.retryPolicy) recoverFrom $ \i ->
@@ -226,7 +236,7 @@ getResponse a s n = do
     pickHost p = maybe (throwM NoHostAvailable) return =<< liftIO (select p)
 
 -- | Like 'request' but not returning any result.
-command :: Request k () () -> Client ()
+command :: MonadClient m => Request k () () -> m ()
 command = void . request
 
 data DebugInfo = DebugInfo
@@ -244,8 +254,8 @@ instance Show DebugInfo where
              . shows (policyInfo dbg)
              $ ""
 
-debugInfo :: Client DebugInfo
-debugInfo = do
+debugInfo :: MonadClient m => m DebugInfo
+debugInfo = liftClient $ do
     hosts <- Map.keys <$> (readTVarIO' =<< view hostmap)
     pols  <- liftIO . display =<< view policy
     jbs   <- Jobs.showJobs =<< view jobs

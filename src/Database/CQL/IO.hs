@@ -50,8 +50,9 @@ module Database.CQL.IO
 
       -- * Client monad
     , Client
+    , MonadClient (..)
     , ClientState
-    , DebugInfo (..)
+    , DebugInfo   (..)
     , init
     , runClient
     , retry
@@ -118,7 +119,7 @@ import Database.CQL.IO.Settings
 import Database.CQL.IO.Types
 import Prelude hiding (init)
 
-runQuery :: (Tuple a, Tuple b) => QueryString k a b -> QueryParams a -> Client (Response k a b)
+runQuery :: (MonadClient m, Tuple a, Tuple b) => QueryString k a b -> QueryParams a -> m (Response k a b)
 runQuery q p = do
     r <- request (RqQuery (Query q p))
     case r of
@@ -126,7 +127,7 @@ runQuery q p = do
         _           -> return r
 
 -- | Run a CQL read-only query against a Cassandra node.
-query :: (Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> Client [b]
+query :: (MonadClient m, Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> m [b]
 query q p = do
     r <- runQuery q p
     case r of
@@ -134,15 +135,15 @@ query q p = do
         _                           -> throwM UnexpectedResponse
 
 -- | Run a CQL read-only query against a Cassandra node.
-query1 :: (Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> Client (Maybe b)
+query1 :: (MonadClient m, Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> m (Maybe b)
 query1 q p = listToMaybe <$> query q p
 
 -- | Run a CQL insert/update query against a Cassandra node.
-write :: Tuple a => QueryString W a () -> QueryParams a -> Client ()
+write :: (MonadClient m, Tuple a) => QueryString W a () -> QueryParams a -> m ()
 write q p = void $ runQuery q p
 
 -- | Run a CQL schema query against a Cassandra node.
-schema :: Tuple a => QueryString S a () -> QueryParams a -> Client (Maybe SchemaChange)
+schema :: (MonadClient m, Tuple a) => QueryString S a () -> QueryParams a -> m (Maybe SchemaChange)
 schema x y = do
     r <- runQuery x y
     case r of
@@ -151,7 +152,7 @@ schema x y = do
         _                                 -> throwM UnexpectedResponse
 
 -- | Run a batch query against a Cassandra node.
-batch :: Batch -> Client ()
+batch :: MonadClient m => Batch -> m ()
 batch b = command (RqBatch b)
 
 -- | Return value of 'paginate'. Contains the actual result values as well
@@ -176,7 +177,7 @@ emptyPage = Page False [] (return emptyPage)
 -- Please note that -- as of Cassandra 2.1.0 -- if your requested page size
 -- is equal to the result size, 'hasMore' might be true and a subsequent
 -- 'nextPage' will return an empty list in 'result'.
-paginate :: (Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> Client (Page b)
+paginate :: (MonadClient m, Tuple a, Tuple b) => QueryString R a b -> QueryParams a -> m (Page b)
 paginate q p = do
     let p' = p { pageSize = pageSize p <|> Just 10000 }
     r <- runQuery q p'
