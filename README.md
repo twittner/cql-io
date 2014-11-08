@@ -14,3 +14,6 @@ own policies if desired.
 
 **Support for connection streams**. Requests can be multiplexed over a
 few connections.
+
+**Customisable retry settings**. Support for default retry settings as well
+as local overrides per query.
