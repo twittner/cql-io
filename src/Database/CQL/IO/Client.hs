@@ -75,7 +75,6 @@ data Control = Control
 
 data Context = Context
     { _settings      :: Settings
-    , _retrySettings :: RetrySettings
     , _logger        :: Logger
     , _timeouts      :: TimeoutManager
     , _sigMonit      :: Signal HostEvent
@@ -140,7 +139,7 @@ runClient p a = liftIO $ runReaderT (client a) p
 
 -- | Use given 'RetrySettings' during execution of some client action.
 retry :: MonadClient m => RetrySettings -> m a -> m a
-retry r = localState (set (context.retrySettings) r)
+retry r = localState (set (context.settings.retrySettings) r)
 
 -- | Send a CQL 'Request' to the server and return a 'Response'.
 --
@@ -155,21 +154,21 @@ request :: (MonadClient m, Tuple a, Tuple b) => Request k a b -> m (Response k a
 request a = liftClient $ do
     s <- ask
     n <- liftIO $ hostCount (s^.policy)
-    recovering (s^.context.retrySettings.retryPolicy) recoverFrom $ \i ->
+    recovering (s^.context.settings.retrySettings.retryPolicy) recoverFrom $ \i ->
         if i == 0 then
             getResponse a s n
         else let s' = adjust s in
             getResponse (newRequest s) s' n
   where
     adjust s =
-        let x = s^.context.retrySettings.sendTimeoutChange
-            y = s^.context.retrySettings.recvTimeoutChange
+        let x = s^.context.settings.retrySettings.sendTimeoutChange
+            y = s^.context.settings.retrySettings.recvTimeoutChange
         in over (context.settings.connSettings.sendTimeout)     (+ x)
          . over (context.settings.connSettings.responseTimeout) (+ y)
          $ s
 
     newRequest s =
-        case s^.context.retrySettings.reducedConsistency of
+        case s^.context.settings.retrySettings.reducedConsistency of
             Nothing -> a
             Just  c ->
                 case a of
@@ -273,7 +272,7 @@ init :: MonadIO m => Logger -> Settings -> m ClientState
 init g s = liftIO $ do
     t <- TM.create 250
     c <- tryAll (s^.contacts) (mkConnection t)
-    e <- Context s noRetry g t <$> signal
+    e <- Context s g t <$> signal
     p <- s^.policyMaker
     x <- ClientState e
             <$> pure p

@@ -21,9 +21,17 @@ import Database.CQL.IO.Pool as P
 import Database.CQL.IO.Types (Milliseconds (..))
 import Network.Socket (PortNumber (..))
 
+data RetrySettings = RetrySettings
+    { _retryPolicy        :: RetryPolicy
+    , _reducedConsistency :: Maybe Consistency
+    , _sendTimeoutChange  :: Milliseconds
+    , _recvTimeoutChange  :: Milliseconds
+    }
+
 data Settings = Settings
     { _poolSettings  :: PoolSettings
     , _connSettings  :: ConnectionSettings
+    , _retrySettings :: RetrySettings
     , _protoVersion  :: Version
     , _portnumber    :: PortNumber
     , _contacts      :: NonEmpty String
@@ -31,6 +39,7 @@ data Settings = Settings
     , _policyMaker   :: IO Policy
     }
 
+makeLenses ''RetrySettings
 makeLenses ''Settings
 
 -- | Default settings:
@@ -53,10 +62,13 @@ makeLenses ''Settings
 -- * no compression is applied to frame bodies
 --
 -- * no default keyspace is used.
+--
+-- * no retries are done
 defSettings :: Settings
 defSettings = Settings
     P.defSettings
     C.defSettings
+    noRetry
     V3
     (fromInteger 9042)
     ("localhost" :| [])
@@ -110,7 +122,7 @@ setMaxConnections v = set (poolSettings.maxConnections) v
 -- number of CPU cores this codes is running on.
 setPoolStripes :: Int -> Settings -> Settings
 setPoolStripes v s
-    | v < 1     = error "Database.CQL.IO.Settings: stripes must be greater than 0"
+    | v < 1     = error "cql-io settings: stripes must be greater than 0"
     | otherwise = set (poolSettings.poolStripes) v s
 
 -- | When receiving a response times out, we can no longer use the stream of the
@@ -133,8 +145,8 @@ setCompression v = set (connSettings.compression) v
 -- to 32768 streams.
 setMaxStreams :: Int -> Settings -> Settings
 setMaxStreams v s = case s^.protoVersion of
-    V2 | v < 1 || v > 128   -> error "Database.CQL.IO.Settings: max. streams must be within [1, 128]"
-    V3 | v < 1 || v > 32768 -> error "Database.CQL.IO.Settings: max. streams must be within [1, 32768]"
+    V2 | v < 1 || v > 128   -> error "cql-io settings: max. streams must be within [1, 128]"
+    V3 | v < 1 || v > 32768 -> error "cql-io settings: max. streams must be within [1, 32768]"
     _                       -> set (connSettings.maxStreams) v s
 
 -- | Set the connect timeout of a connection.
@@ -157,17 +169,12 @@ setResponseTimeout v = set (connSettings.responseTimeout) (Ms $ round (1000 * v)
 setKeyspace :: Keyspace -> Settings -> Settings
 setKeyspace v = set (connSettings.defKeyspace) (Just v)
 
+-- | Set default retry settings to use.
+setRetrySettings :: RetrySettings -> Settings -> Settings
+setRetrySettings v = set retrySettings v
+
 -----------------------------------------------------------------------------
 -- Retry Settings
-
-data RetrySettings = RetrySettings
-    { _retryPolicy        :: RetryPolicy
-    , _reducedConsistency :: Maybe Consistency
-    , _sendTimeoutChange  :: Milliseconds
-    , _recvTimeoutChange  :: Milliseconds
-    }
-
-makeLenses ''RetrySettings
 
 -- | Never retry.
 noRetry :: RetrySettings
@@ -185,7 +192,7 @@ maxRetries v = over retryPolicy (mappend (limitRetries $ fromIntegral v))
 adjustConsistency :: Consistency -> RetrySettings -> RetrySettings
 adjustConsistency v = set reducedConsistency (Just v)
 
--- | Wait a fixed number of milliseconds between retries.
+-- | Wait a constant time between retries.
 constDelay :: NominalDiffTime -> RetrySettings -> RetrySettings
 constDelay v = setDelayFn constantDelay v v
 
@@ -207,11 +214,11 @@ fibBackoff :: NominalDiffTime
            -> RetrySettings
 fibBackoff = setDelayFn fibonacciBackoff
 
--- | On retry adjust the send timeout by the given number of milliseconds.
+-- | On retry adjust the send timeout.
 adjustSendTimeout :: NominalDiffTime -> RetrySettings -> RetrySettings
 adjustSendTimeout v = set sendTimeoutChange (Ms $ round (1000 * v))
 
--- | On retry adjust the response timeout by the given number of milliseconds.
+-- | On retry adjust the response timeout.
 adjustResponseTimeout :: NominalDiffTime -> RetrySettings -> RetrySettings
 adjustResponseTimeout v = set recvTimeoutChange (Ms $ round (1000 * v))
 
@@ -221,4 +228,4 @@ setDelayFn :: (Int -> RetryPolicy)
            -> RetrySettings
            -> RetrySettings
 setDelayFn d v w = over retryPolicy
-    (mappend $ capDelay (round (1000 * w)) $ d (round (1000 * v)))
+    (mappend $ capDelay (round (1000000 * w)) $ d (round (1000000 * v)))

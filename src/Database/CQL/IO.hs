@@ -47,6 +47,19 @@ module Database.CQL.IO
     , setProtocolVersion
     , setResponseTimeout
     , setSendTimeout
+    , setRetrySettings
+
+      -- ** Retry Settings
+    , RetrySettings
+    , noRetry
+    , retryForever
+    , maxRetries
+    , adjustConsistency
+    , constDelay
+    , expBackoff
+    , fibBackoff
+    , adjustSendTimeout
+    , adjustResponseTimeout
 
       -- * Client monad
     , Client
@@ -72,18 +85,6 @@ module Database.CQL.IO
       -- ** low-level
     , request
     , command
-
-      -- * Retry Settings
-    , RetrySettings
-    , noRetry
-    , retryForever
-    , maxRetries
-    , adjustConsistency
-    , constDelay
-    , expBackoff
-    , fibBackoff
-    , adjustSendTimeout
-    , adjustResponseTimeout
 
       -- * Policies
     , Policy (..)
