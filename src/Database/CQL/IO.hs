@@ -40,7 +40,6 @@ module Database.CQL.IO
     , setMaxConnections
     , setMaxStreams
     , setMaxTimeouts
-    , setMaxWaitQueue
     , setPolicy
     , setPoolStripes
     , setPortNumber
