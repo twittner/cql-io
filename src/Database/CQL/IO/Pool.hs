@@ -13,7 +13,6 @@ module Database.CQL.IO.Pool
     , destroy
     , purge
     , with
-    , tryWith
 
     , PoolSettings
     , defSettings
@@ -103,20 +102,11 @@ create mk del g s k = do
 destroy :: Pool -> IO ()
 destroy = purge
 
-with :: MonadIO m => Pool -> (Connection -> IO a) -> m a
+with :: MonadIO m => Pool -> (Connection -> IO a) -> m (Maybe a)
 with p f = liftIO $ do
     s <- stripe p
     mask $ \restore -> do
         r <- take1 p s
-        x <- restore (f (value r)) `catches` handlers p s r
-        put p s r id
-        return x
-
-tryWith :: MonadIO m => Pool -> (Connection -> IO a) -> m (Maybe a)
-tryWith p f = liftIO $ do
-    s <- stripe p
-    mask $ \restore -> do
-        r <- tryTake1 p s
         case r of
             Just  v -> do
                 x <- restore (f (value v)) `catches` handlers p s v
@@ -144,24 +134,8 @@ handlers p s r =
                 destroyR p s r
             else put p s r incrTimeouts
 
-take1 :: Pool -> Stripe -> IO Resource
+take1 :: Pool -> Stripe -> IO (Maybe Resource)
 take1 p s = do
-    r <- join . atomically $ do
-        c <- readTVar (conns s)
-        u <- readTVar (inUse s)
-        let n       = Seq.length c
-        let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
-        if | u < p^.settings.maxConnections -> mkNew p s u
-           | n > 0 && refcnt r < p^.maxRefs -> use s r rr
-           | otherwise                      -> retry
-    case r of
-        Left  x -> do
-            atomically (modifyTVar' (conns s) (|> x))
-            return x
-        Right x -> return x
-
-tryTake1 :: Pool -> Stripe -> IO (Maybe Resource)
-tryTake1 p s = do
     r <- join . atomically $ do
         c <- readTVar (conns s)
         u <- readTVar (inUse s)
@@ -236,4 +210,3 @@ stripe p = ((p^.stripes) !) <$> ((`mod` (p^.settings.poolStripes)) . hash) <$> m
 incrTimeouts :: Resource -> Resource
 incrTimeouts r = r { timeouts = timeouts r + 1 }
 {-# INLINE incrTimeouts #-}
-

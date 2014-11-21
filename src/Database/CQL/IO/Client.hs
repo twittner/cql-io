@@ -27,7 +27,7 @@ import Control.Concurrent.Async (async)
 import Control.Concurrent.STM hiding (retry)
 import Control.Exception (IOException)
 import Control.Lens hiding ((.=), Context)
-import Control.Monad (unless, void, when)
+import Control.Monad (void, when)
 import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Reader (ReaderT, runReaderT, MonadReader, ask)
@@ -85,7 +85,6 @@ data ClientState = ClientState
     { _context  :: Context
     , _policy   :: Policy
     , _control  :: TVar Control
-    , _failures :: TVar Word64
     , _hostmap  :: TVar (Map Host Pool)
     , _jobs     :: Jobs InetAddr
     }
@@ -200,29 +199,14 @@ getResponse a s n = do
             getResponse a s n
   where
     action p = do
-        res <- tryWith p go
+        res <- with p transaction
         case res of
             Just  r -> return r
             Nothing ->
                 if n > 0 then
                     getResponse a s (n - 1)
-                else case s^.context.settings.maxWaitQueue of
-                    Nothing -> with p transaction
-                    Just  q -> again q p
-
-    go h = do
-        atomically $ modifyTVar' (s^.failures) $ \x -> if x > 0 then x - 1 else 0
-        transaction h
-
-    again q p = do
-        k <- atomically' $ do
-            k <- readTVar (s^.failures)
-            unless (k == q) $
-                writeTVar (s^.failures) (k + 1)
-            return k
-        unless (k < q) $
-            throwM HostsBusy
-        with p go
+                else
+                    throwM HostsBusy
 
     transaction c = do
         let x = s^.context.settings.connSettings.compression
@@ -277,7 +261,6 @@ init g s = liftIO $ do
     x <- ClientState e
             <$> pure p
             <*> newTVarIO (Control Connected c)
-            <*> newTVarIO 0
             <*> newTVarIO Map.empty
             <*> Jobs.new
     e^.sigMonit |-> onEvent p
