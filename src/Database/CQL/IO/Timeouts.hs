@@ -22,12 +22,12 @@ import Database.CQL.IO.Types (Milliseconds (..), ignore)
 
 data TimeoutManager = TimeoutManager
     { roundtrip :: !Int
-    , reaper    :: Reaper [Action] Action
+    , reaper    :: !(Reaper [Action] Action)
     }
 
 data Action = Action
-    { action :: IO ()
-    , state  :: TVar State
+    { action :: !(IO ())
+    , state  :: !(TVar State)
     }
 
 data State = Running !Int | Canceled

@@ -69,24 +69,24 @@ data ControlState
     deriving (Eq, Ord, Show)
 
 data Control = Control
-    { _state      :: ControlState
-    , _connection :: Connection
+    { _state      :: !ControlState
+    , _connection :: !Connection
     }
 
 data Context = Context
-    { _settings      :: Settings
-    , _logger        :: Logger
-    , _timeouts      :: TimeoutManager
-    , _sigMonit      :: Signal HostEvent
+    { _settings      :: !Settings
+    , _logger        :: !Logger
+    , _timeouts      :: !TimeoutManager
+    , _sigMonit      :: !(Signal HostEvent)
     }
 
 -- | Opaque client state/environment.
 data ClientState = ClientState
-    { _context  :: Context
-    , _policy   :: Policy
-    , _control  :: TVar Control
-    , _hostmap  :: TVar (Map Host Pool)
-    , _jobs     :: Jobs InetAddr
+    { _context  :: !Context
+    , _policy   :: !Policy
+    , _control  :: !(TVar Control)
+    , _hostmap  :: !(TVar (Map Host Pool))
+    , _jobs     :: !(Jobs InetAddr)
     }
 
 makeLenses ''Control

@@ -22,20 +22,20 @@ import Database.CQL.IO.Types (Milliseconds (..))
 import Network.Socket (PortNumber (..))
 
 data RetrySettings = RetrySettings
-    { _retryPolicy        :: RetryPolicy
-    , _reducedConsistency :: Maybe Consistency
-    , _sendTimeoutChange  :: Milliseconds
-    , _recvTimeoutChange  :: Milliseconds
+    { _retryPolicy        :: !RetryPolicy
+    , _reducedConsistency :: !(Maybe Consistency)
+    , _sendTimeoutChange  :: !Milliseconds
+    , _recvTimeoutChange  :: !Milliseconds
     }
 
 data Settings = Settings
-    { _poolSettings  :: PoolSettings
-    , _connSettings  :: ConnectionSettings
-    , _retrySettings :: RetrySettings
-    , _protoVersion  :: Version
-    , _portnumber    :: PortNumber
-    , _contacts      :: NonEmpty String
-    , _policyMaker   :: IO Policy
+    { _poolSettings  :: !PoolSettings
+    , _connSettings  :: !ConnectionSettings
+    , _retrySettings :: !RetrySettings
+    , _protoVersion  :: !Version
+    , _portnumber    :: !PortNumber
+    , _contacts      :: !(NonEmpty String)
+    , _policyMaker   :: !(IO Policy)
     }
 
 makeLenses ''RetrySettings

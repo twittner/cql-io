@@ -57,14 +57,14 @@ data PoolSettings = PoolSettings
     }
 
 data Pool = Pool
-    { _createFn    :: IO Connection
-    , _destroyFn   :: Connection -> IO ()
+    { _createFn    :: !(IO Connection)
+    , _destroyFn   :: !(Connection -> IO ())
     , _logger      :: !Logger
     , _settings    :: !PoolSettings
     , _maxRefs     :: !Int
-    , _currentTime :: IO UTCTime
-    , _stripes     :: Vector Stripe
-    , _finaliser   :: IORef ()
+    , _currentTime :: !(IO UTCTime)
+    , _stripes     :: !(Vector Stripe)
+    , _finaliser   :: !(IORef ())
     }
 
 data Resource = Resource
@@ -74,9 +74,14 @@ data Resource = Resource
     , value    :: !Connection
     } deriving Show
 
+data Box
+    = New  !Resource
+    | Used !Resource
+    | Empty
+
 data Stripe = Stripe
-    { conns :: TVar (Seq Resource)
-    , inUse :: TVar Int
+    { conns :: !(TVar (Seq Resource))
+    , inUse :: !(TVar Int)
     }
 
 makeLenses ''PoolSettings
@@ -141,26 +146,26 @@ take1 p s = do
         u <- readTVar (inUse s)
         let n       = Seq.length c
         let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
-        if | u < p^.settings.maxConnections -> fmap Just <$> mkNew p s u
-           | n > 0 && refcnt r < p^.maxRefs -> fmap Just <$> use s r rr
-           | otherwise                      -> return (return Nothing)
+        if | u < p^.settings.maxConnections -> mkNew p s u
+           | n > 0 && refcnt r < p^.maxRefs -> use s r rr
+           | otherwise                      -> return (return Empty)
     case r of
-        Just (Left  x) -> do
+        New x -> do
             atomically (modifyTVar' (conns s) (|> x))
             return (Just x)
-        Just (Right x) -> return (Just x)
-        Nothing        -> return Nothing
+        Used x -> return (Just x)
+        Empty  -> return Nothing
 
-use :: Stripe -> Resource -> Seq Resource -> STM (IO (Either Resource Resource))
+use :: Stripe -> Resource -> Seq Resource -> STM (IO Box)
 use s r rr = do
     writeTVar (conns s) $! rr |> r { refcnt = refcnt r + 1 }
-    return (return (Right r))
+    return (return (Used r))
 {-# INLINE use #-}
 
-mkNew :: Pool -> Stripe -> Int -> STM (IO (Either Resource Resource))
+mkNew :: Pool -> Stripe -> Int -> STM (IO Box)
 mkNew p s u = do
     writeTVar (inUse s) $! u + 1
-    return $ Left <$> onException
+    return $ New <$> onException
         (Resource <$> p^.currentTime <*> pure 1 <*> pure 0 <*> p^.createFn)
         (atomically (modifyTVar' (inUse s) (subtract 1)))
 {-# INLINE mkNew #-}

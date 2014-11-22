@@ -53,8 +53,8 @@ data Policy = Policy
 type HostMap = TVar Hosts
 
 data Hosts = Hosts
-    { _alive :: Map InetAddr Host
-    , _other :: Map InetAddr Host
+    { _alive :: !(Map InetAddr Host)
+    , _other :: !(Map InetAddr Host)
     } deriving Show
 
 makeLenses ''Hosts
