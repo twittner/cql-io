@@ -2,10 +2,14 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+{-# LANGUAGE CPP                        #-}
+{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE TypeFamilies               #-}
 
 module Database.CQL.IO.Client
     ( Client
@@ -28,9 +32,15 @@ import Control.Concurrent.STM hiding (retry)
 import Control.Exception (IOException)
 import Control.Lens hiding ((.=), Context)
 import Control.Monad (void, when)
+import Control.Monad.Base (MonadBase (..))
 import Control.Monad.Catch
 import Control.Monad.IO.Class
-import Control.Monad.Reader (ReaderT, runReaderT, MonadReader, ask)
+import Control.Monad.Reader (ReaderT (..), runReaderT, MonadReader, ask)
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Control (MonadBaseControl (..))
+#if MIN_VERSION_transformers(0,4,0)
+import Control.Monad.Trans.Except
+#endif
 import Control.Retry
 import Data.Foldable (for_, foldrM)
 import Data.List (find)
@@ -55,6 +65,8 @@ import Network.Socket (SockAddr (..), PortNumber)
 import System.Logger.Class hiding (Settings, new, settings, create)
 
 import qualified Control.Monad.Reader       as Reader
+import qualified Control.Monad.State.Strict as S
+import qualified Control.Monad.State.Lazy   as LS
 import qualified Data.List.NonEmpty         as NE
 import qualified Data.Map.Strict            as Map
 import qualified Database.CQL.IO.Connection as C
@@ -117,6 +129,19 @@ newtype Client a = Client
 instance MonadLogger Client where
     log l m = view (context.logger) >>= \g -> Logger.log g l m
 
+instance MonadBase IO Client where
+    liftBase = liftIO
+
+instance MonadBaseControl IO Client where
+    newtype StM Client a = ClientStM
+        { unClientStM :: StM (ReaderT ClientState IO) a
+        }
+
+    liftBaseWith f =
+        Client . liftBaseWith $ \run -> f (fmap ClientStM . run . client)
+
+    restoreM = Client . restoreM . unClientStM
+
 -- | Monads in which 'Client' actions may be embedded.
 class (Functor m, Applicative m, Monad m, MonadIO m, MonadCatch m) => MonadClient m
   where
@@ -128,6 +153,24 @@ class (Functor m, Applicative m, Monad m, MonadIO m, MonadCatch m) => MonadClien
 instance MonadClient Client where
     liftClient = id
     localState = Reader.local
+
+instance MonadClient m => MonadClient (ReaderT r m) where
+    liftClient     = lift . liftClient
+    localState f m = ReaderT (localState f . runReaderT m)
+
+instance MonadClient m => MonadClient (S.StateT s m) where
+    liftClient     = lift . liftClient
+    localState f m = S.StateT (localState f . S.runStateT m)
+
+instance MonadClient m => MonadClient (LS.StateT s m) where
+    liftClient     = lift . liftClient
+    localState f m = LS.StateT (localState f . LS.runStateT m)
+
+#if MIN_VERSION_transformers(0,4,0)
+instance MonadClient m => MonadClient (ExceptT e m) where
+    liftClient     = lift . liftClient
+    localState f m = ExceptT $ localState f (runExceptT m)
+#endif
 
 -----------------------------------------------------------------------------
 -- API
