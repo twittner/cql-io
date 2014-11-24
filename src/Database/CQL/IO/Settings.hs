@@ -22,21 +22,20 @@ import Database.CQL.IO.Types (Milliseconds (..))
 import Network.Socket (PortNumber (..))
 
 data RetrySettings = RetrySettings
-    { _retryPolicy        :: RetryPolicy
-    , _reducedConsistency :: Maybe Consistency
-    , _sendTimeoutChange  :: Milliseconds
-    , _recvTimeoutChange  :: Milliseconds
+    { _retryPolicy        :: !RetryPolicy
+    , _reducedConsistency :: !(Maybe Consistency)
+    , _sendTimeoutChange  :: !Milliseconds
+    , _recvTimeoutChange  :: !Milliseconds
     }
 
 data Settings = Settings
-    { _poolSettings  :: PoolSettings
-    , _connSettings  :: ConnectionSettings
-    , _retrySettings :: RetrySettings
-    , _protoVersion  :: Version
-    , _portnumber    :: PortNumber
-    , _contacts      :: NonEmpty String
-    , _maxWaitQueue  :: Maybe Word64
-    , _policyMaker   :: IO Policy
+    { _poolSettings  :: !PoolSettings
+    , _connSettings  :: !ConnectionSettings
+    , _retrySettings :: !RetrySettings
+    , _protoVersion  :: !Version
+    , _portnumber    :: !PortNumber
+    , _contacts      :: !(NonEmpty String)
+    , _policyMaker   :: !(IO Policy)
     }
 
 makeLenses ''RetrySettings
@@ -72,7 +71,6 @@ defSettings = Settings
     V3
     (fromInteger 9042)
     ("localhost" :| [])
-    Nothing
     random
 
 -----------------------------------------------------------------------------
@@ -98,13 +96,6 @@ setPortNumber v = set portnumber v
 -- | Set the load-balancing policy.
 setPolicy :: IO Policy -> Settings -> Settings
 setPolicy v = set policyMaker v
-
--- | Set the maximum length of the wait queue which is used if
--- connection pools of all nodes in a cluster are busy. Once the maximum
--- queue size has been reached, queries will throw a 'HostsBusy' exception
--- immediatly.
-setMaxWaitQueue :: Word64 -> Settings -> Settings
-setMaxWaitQueue v = set maxWaitQueue (Just v)
 
 -----------------------------------------------------------------------------
 -- Pool Settings

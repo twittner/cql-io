@@ -70,7 +70,7 @@ instance Show InvalidSettings where
 -----------------------------------------------------------------------------
 -- InternalError
 
-data InternalError = InternalError String
+newtype InternalError = InternalError String
     deriving Typeable
 
 instance Exception InternalError
@@ -109,7 +109,7 @@ instance Show ConnectionError where
 -----------------------------------------------------------------------------
 -- Timeout
 
-data Timeout = TimeoutRead !String
+newtype Timeout = TimeoutRead String
     deriving Typeable
 
 instance Exception Timeout
@@ -122,7 +122,7 @@ instance Show Timeout where
 
 data UnexpectedResponse where
     UnexpectedResponse  :: UnexpectedResponse
-    UnexpectedResponse' :: Show b => Response k a b -> UnexpectedResponse
+    UnexpectedResponse' :: Show b => !(Response k a b) -> UnexpectedResponse
 
 deriving instance Typeable UnexpectedResponse
 instance Exception UnexpectedResponse

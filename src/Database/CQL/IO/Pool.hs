@@ -13,7 +13,6 @@ module Database.CQL.IO.Pool
     , destroy
     , purge
     , with
-    , tryWith
 
     , PoolSettings
     , defSettings
@@ -58,14 +57,14 @@ data PoolSettings = PoolSettings
     }
 
 data Pool = Pool
-    { _createFn    :: IO Connection
-    , _destroyFn   :: Connection -> IO ()
+    { _createFn    :: !(IO Connection)
+    , _destroyFn   :: !(Connection -> IO ())
     , _logger      :: !Logger
     , _settings    :: !PoolSettings
     , _maxRefs     :: !Int
-    , _currentTime :: IO UTCTime
-    , _stripes     :: Vector Stripe
-    , _finaliser   :: IORef ()
+    , _currentTime :: !(IO UTCTime)
+    , _stripes     :: !(Vector Stripe)
+    , _finaliser   :: !(IORef ())
     }
 
 data Resource = Resource
@@ -75,9 +74,14 @@ data Resource = Resource
     , value    :: !Connection
     } deriving Show
 
+data Box
+    = New  !Resource
+    | Used !Resource
+    | Empty
+
 data Stripe = Stripe
-    { conns :: TVar (Seq Resource)
-    , inUse :: TVar Int
+    { conns :: !(TVar (Seq Resource))
+    , inUse :: !(TVar Int)
     }
 
 makeLenses ''PoolSettings
@@ -103,20 +107,11 @@ create mk del g s k = do
 destroy :: Pool -> IO ()
 destroy = purge
 
-with :: MonadIO m => Pool -> (Connection -> IO a) -> m a
+with :: MonadIO m => Pool -> (Connection -> IO a) -> m (Maybe a)
 with p f = liftIO $ do
     s <- stripe p
     mask $ \restore -> do
         r <- take1 p s
-        x <- restore (f (value r)) `catches` handlers p s r
-        put p s r id
-        return x
-
-tryWith :: MonadIO m => Pool -> (Connection -> IO a) -> m (Maybe a)
-tryWith p f = liftIO $ do
-    s <- stripe p
-    mask $ \restore -> do
-        r <- tryTake1 p s
         case r of
             Just  v -> do
                 x <- restore (f (value v)) `catches` handlers p s v
@@ -144,7 +139,7 @@ handlers p s r =
                 destroyR p s r
             else put p s r incrTimeouts
 
-take1 :: Pool -> Stripe -> IO Resource
+take1 :: Pool -> Stripe -> IO (Maybe Resource)
 take1 p s = do
     r <- join . atomically $ do
         c <- readTVar (conns s)
@@ -153,40 +148,24 @@ take1 p s = do
         let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
         if | u < p^.settings.maxConnections -> mkNew p s u
            | n > 0 && refcnt r < p^.maxRefs -> use s r rr
-           | otherwise                      -> retry
+           | otherwise                      -> return (return Empty)
     case r of
-        Left  x -> do
-            atomically (modifyTVar' (conns s) (|> x))
-            return x
-        Right x -> return x
-
-tryTake1 :: Pool -> Stripe -> IO (Maybe Resource)
-tryTake1 p s = do
-    r <- join . atomically $ do
-        c <- readTVar (conns s)
-        u <- readTVar (inUse s)
-        let n       = Seq.length c
-        let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
-        if | u < p^.settings.maxConnections -> fmap Just <$> mkNew p s u
-           | n > 0 && refcnt r < p^.maxRefs -> fmap Just <$> use s r rr
-           | otherwise                      -> return (return Nothing)
-    case r of
-        Just (Left  x) -> do
+        New x -> do
             atomically (modifyTVar' (conns s) (|> x))
             return (Just x)
-        Just (Right x) -> return (Just x)
-        Nothing        -> return Nothing
+        Used x -> return (Just x)
+        Empty  -> return Nothing
 
-use :: Stripe -> Resource -> Seq Resource -> STM (IO (Either Resource Resource))
+use :: Stripe -> Resource -> Seq Resource -> STM (IO Box)
 use s r rr = do
     writeTVar (conns s) $! rr |> r { refcnt = refcnt r + 1 }
-    return (return (Right r))
+    return (return (Used r))
 {-# INLINE use #-}
 
-mkNew :: Pool -> Stripe -> Int -> STM (IO (Either Resource Resource))
+mkNew :: Pool -> Stripe -> Int -> STM (IO Box)
 mkNew p s u = do
     writeTVar (inUse s) $! u + 1
-    return $ Left <$> onException
+    return $ New <$> onException
         (Resource <$> p^.currentTime <*> pure 1 <*> pure 0 <*> p^.createFn)
         (atomically (modifyTVar' (inUse s) (subtract 1)))
 {-# INLINE mkNew #-}
@@ -236,4 +215,3 @@ stripe p = ((p^.stripes) !) <$> ((`mod` (p^.settings.poolStripes)) . hash) <$> m
 incrTimeouts :: Resource -> Resource
 incrTimeouts r = r { timeouts = timeouts r + 1 }
 {-# INLINE incrTimeouts #-}
-

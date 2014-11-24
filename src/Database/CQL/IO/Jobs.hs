@@ -24,7 +24,7 @@ import qualified Data.Map.Strict as Map
 
 data Job
     = Reserved
-    | Running !Unique (Async ())
+    | Running !Unique !(Async ())
 
 newtype Jobs k = Jobs (TVar (Map k Job))
 

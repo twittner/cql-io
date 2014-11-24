@@ -76,29 +76,29 @@ import qualified Network.Socket             as S
 import qualified Network.Socket.ByteString  as NB
 
 data ConnectionSettings = ConnectionSettings
-    { _connectTimeout  :: Milliseconds
-    , _sendTimeout     :: Milliseconds
-    , _responseTimeout :: Milliseconds
-    , _maxStreams      :: Int
-    , _compression     :: Compression
-    , _defKeyspace     :: Maybe Keyspace
+    { _connectTimeout  :: !Milliseconds
+    , _sendTimeout     :: !Milliseconds
+    , _responseTimeout :: !Milliseconds
+    , _maxStreams      :: !Int
+    , _compression     :: !Compression
+    , _defKeyspace     :: !(Maybe Keyspace)
     }
 
 type Streams = Vector (Sync (Header, ByteString))
 
 data Connection = Connection
-    { _settings :: ConnectionSettings
-    , _address  :: InetAddr
-    , _tmanager :: TimeoutManager
-    , _protocol :: Version
-    , _sock     :: Socket
-    , _streams  :: Streams
-    , _wLock    :: MVar ()
-    , _reader   :: Async ()
-    , _tickets  :: Pool
-    , _logger   :: Logger
-    , _eventSig :: Signal Event
-    , _ident    :: Unique
+    { _settings :: !ConnectionSettings
+    , _address  :: !InetAddr
+    , _tmanager :: !TimeoutManager
+    , _protocol :: !Version
+    , _sock     :: !Socket
+    , _streams  :: !Streams
+    , _wLock    :: !(MVar ())
+    , _reader   :: !(Async ())
+    , _tickets  :: !Pool
+    , _logger   :: !Logger
+    , _eventSig :: !(Signal Event)
+    , _ident    :: !Unique
     }
 
 makeLenses ''ConnectionSettings
