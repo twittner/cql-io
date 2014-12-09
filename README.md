@@ -1,6 +1,8 @@
 CQL Cassandra driver
 --------------------
 
+[![Build Status](https://travis-ci.org/twittner/cql-io.svg?branch=develop)](https://travis-ci.org/twittner/cql-io)
+
 This library uses the [cql](http://hackage.haskell.org/package/cql) library
 which implements Cassandra's CQL protocol and complements it with the
 neccessary I/O operations. The feature-set includes:
