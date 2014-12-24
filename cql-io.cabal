@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.12.2
+version:              0.12.3
 synopsis:             Cassandra CQL client.
 stability:            experimental
 license:              OtherLicense

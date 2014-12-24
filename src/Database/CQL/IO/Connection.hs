@@ -228,15 +228,15 @@ readSocket v g i s = do
 
 recv :: InetAddr -> Int -> Socket -> IO ByteString
 recv _ 0 _ = return L.empty
-recv i n c = toLazyByteString <$> go 0 mempty
+recv i n c = toLazyByteString <$> go n mempty
   where
     go !k !bb = do
-        a <- NB.recv c (n - k)
+        a <- NB.recv c (k `min` 8192)
         when (B.null a) $
             throwM (ConnectionClosed i)
         let b = bb <> byteString a
-            m = B.length a + k
-        if m < n then go m b else return b
+        let m = k - B.length a
+        if m > 0 then go m b else return b
 
 -----------------------------------------------------------------------------
 -- Operations
