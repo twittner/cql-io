@@ -58,6 +58,8 @@ makeLenses ''Settings
 --
 -- * 128 streams per connection are used
 --
+-- * 16k receive buffer size
+--
 -- * no compression is applied to frame bodies
 --
 -- * no default keyspace is used.
@@ -163,6 +165,13 @@ setKeyspace v = set (connSettings.defKeyspace) (Just v)
 -- | Set default retry settings to use.
 setRetrySettings :: RetrySettings -> Settings -> Settings
 setRetrySettings v = set retrySettings v
+
+-- | Set maximum receive buffer size.
+--
+-- The actual buffer size used will be the minimum of the CQL response size
+-- and the value set here.
+setMaxRecvBuffer :: Int -> Settings -> Settings
+setMaxRecvBuffer v = set (connSettings.maxRecvBuffer) v
 
 -----------------------------------------------------------------------------
 -- Retry Settings

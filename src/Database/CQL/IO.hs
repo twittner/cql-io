@@ -47,6 +47,7 @@ module Database.CQL.IO
     , setResponseTimeout
     , setSendTimeout
     , setRetrySettings
+    , setMaxRecvBuffer
 
       -- ** Retry Settings
     , RetrySettings

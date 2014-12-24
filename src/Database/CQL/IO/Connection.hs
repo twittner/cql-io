@@ -31,6 +31,7 @@ module Database.CQL.IO.Connection
     , maxStreams
     , compression
     , defKeyspace
+    , maxRecvBuffer
     ) where
 
 import Control.Applicative
@@ -82,6 +83,7 @@ data ConnectionSettings = ConnectionSettings
     , _maxStreams      :: !Int
     , _compression     :: !Compression
     , _defKeyspace     :: !(Maybe Keyspace)
+    , _maxRecvBuffer   :: !Int
     }
 
 type Streams = Vector (Sync (Header, ByteString))
@@ -121,6 +123,7 @@ defSettings =
                        128           -- max streams per connection
                        noCompression -- compression
                        Nothing       -- keyspace
+                       16384         -- receive buffer size
 
 resolve :: String -> PortNumber -> IO InetAddr
 resolve host port =
@@ -143,7 +146,7 @@ connect t m v g a = liftIO $
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
         lck <- newMVar ()
         sig <- signal
-        rdr <- async (readLoop v g (t^.compression) tck a s syn sig)
+        rdr <- async (readLoop v g t tck a s syn sig)
         Connection t a m v s syn lck rdr tck g sig <$> newUnique
 
 mkSock :: InetAddr -> IO Socket
@@ -158,14 +161,14 @@ ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
     fromMaybe False <$> timeout 5000000
         ((S.connect s (sockAddr a) >> return True) `catchAll` const (return False))
 
-readLoop :: Version -> Logger -> Compression -> Pool -> InetAddr -> Socket -> Streams -> Signal Event -> IO ()
-readLoop v g cmp tck i sck syn s = run `catch` logException `finally` cleanup
+readLoop :: Version -> Logger -> ConnectionSettings -> Pool -> InetAddr -> Socket -> Streams -> Signal Event -> IO ()
+readLoop v g set tck i sck syn s = run `catch` logException `finally` cleanup
   where
     run = forever $ do
-        x <- readSocket v g i sck
+        x <- readSocket v g i sck (set^.maxRecvBuffer)
         case fromStreamId $ streamId (fst x) of
             -1 ->
-                case parse cmp x :: Response () () () of
+                case parse (set^.compression) x :: Response () () () of
                     RsError _ e -> throwM e
                     RsEvent _ e -> emit s e
                     r           -> throwM (UnexpectedResponse' r)
@@ -209,9 +212,9 @@ request c f = send >>= receive
             markAvailable (c^.tickets) i
             return x
 
-readSocket :: Version -> Logger -> InetAddr -> Socket -> IO (Header, ByteString)
-readSocket v g i s = do
-    b <- recv i (if v == V3 then 9 else 8) s
+readSocket :: Version -> Logger -> InetAddr -> Socket -> Int -> IO (Header, ByteString)
+readSocket v g i s n = do
+    b <- recv n i s (if v == V3 then 9 else 8)
     h <- case header v b of
             Left  e -> throwM $ InternalError ("response header reading: " ++ e)
             Right h -> return h
@@ -219,24 +222,24 @@ readSocket v g i s = do
         RqHeader -> throwM $ InternalError "unexpected request header"
         RsHeader -> do
             let len = lengthRepr (bodyLength h)
-            x <- recv i (fromIntegral len) s
+            x <- recv n i s (fromIntegral len)
             trace g $ msg (i +++ val "#" +++ fd s)
                 ~~ "stream" .= fromStreamId (streamId h)
                 ~~ "type"   .= val "response"
                 ~~ msg' (hexdump $ L.take 160 (b <> x))
             return (h, x)
 
-recv :: InetAddr -> Int -> Socket -> IO ByteString
-recv _ 0 _ = return L.empty
-recv i n c = toLazyByteString <$> go 0 mempty
+recv :: Int -> InetAddr -> Socket -> Int -> IO ByteString
+recv _ _ _ 0 = return L.empty
+recv x i s n = toLazyByteString <$> go n mempty
   where
     go !k !bb = do
-        a <- NB.recv c (n - k)
+        a <- NB.recv s (k `min` x)
         when (B.null a) $
             throwM (ConnectionClosed i)
         let b = bb <> byteString a
-            m = B.length a + k
-        if m < n then go m b else return b
+        let m = k - B.length a
+        if m > 0 then go m b else return b
 
 -----------------------------------------------------------------------------
 -- Operations
