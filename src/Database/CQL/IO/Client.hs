@@ -232,6 +232,7 @@ request a = liftClient $ do
             ServerError  {} -> return True
             _               -> return False
         , const $ Handler $ \(_ :: ConnectionError) -> return True
+        , const $ Handler $ \(_ :: IOException)     -> return True
         ]
 
 getResponse :: (Tuple a, Tuple b) => Request k a b -> ClientState -> Word -> Client (Response k a b)
