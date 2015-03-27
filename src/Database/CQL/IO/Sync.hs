@@ -14,6 +14,7 @@ module Database.CQL.IO.Sync
 import Control.Applicative
 import Control.Concurrent.STM
 import Control.Exception (SomeException, Exception, toException)
+import Prelude
 
 data State a
     = Empty

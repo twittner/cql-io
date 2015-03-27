@@ -4,7 +4,6 @@
 
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -66,6 +65,7 @@ import Network.Socket.ByteString.Lazy (sendAll)
 import System.IO (nativeNewline, Newline (..))
 import System.Logger hiding (Settings, close, defSettings, settings)
 import System.Timeout
+import Prelude
 
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy       as L
@@ -152,9 +152,9 @@ connect t m v g a = liftIO $
 mkSock :: InetAddr -> IO Socket
 mkSock (InetAddr a) = socket (familyOf a) Stream defaultProtocol
   where
-    familyOf (SockAddrInet  {..}) = AF_INET
-    familyOf (SockAddrInet6 {..}) = AF_INET6
-    familyOf (SockAddrUnix  {..}) = AF_UNIX
+    familyOf (SockAddrInet  _ _)     = AF_INET
+    familyOf (SockAddrInet6 _ _ _ _) = AF_INET6
+    familyOf (SockAddrUnix  _)       = AF_UNIX
 
 ping :: MonadIO m => InetAddr -> m Bool
 ping a = liftIO $ bracket (mkSock a) S.close $ \s ->

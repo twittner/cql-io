@@ -19,6 +19,7 @@ import Data.Word
 import Database.CQL.IO.Cluster.Host
 import Database.CQL.IO.Types (InetAddr)
 import System.Random.MWC
+import Prelude
 
 import qualified Data.Map.Strict as Map
 

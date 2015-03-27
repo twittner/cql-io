@@ -19,6 +19,7 @@ import Control.Exception (mask_, bracket)
 import Control.Reaper
 import Control.Monad
 import Database.CQL.IO.Types (Milliseconds (..), ignore)
+import Prelude
 
 data TimeoutManager = TimeoutManager
     { roundtrip :: !Int

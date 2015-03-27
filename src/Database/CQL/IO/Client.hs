@@ -64,6 +64,7 @@ import Database.CQL.IO.Types
 import Database.CQL.Protocol hiding (Map)
 import Network.Socket (SockAddr (..), PortNumber)
 import System.Logger.Class hiding (Settings, new, settings, create)
+import Prelude
 
 import qualified Control.Monad.Reader       as Reader
 import qualified Control.Monad.State.Strict as S

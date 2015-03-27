@@ -16,6 +16,7 @@ import Control.Applicative
 import Control.Concurrent.STM
 import Control.Exception (SomeException, Exception, toException)
 import Data.Set (Set)
+import Prelude
 
 import qualified Data.Set as Set
 
