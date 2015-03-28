@@ -20,6 +20,7 @@ import Database.CQL.IO.Connection as C
 import Database.CQL.IO.Pool as P
 import Database.CQL.IO.Types (Milliseconds (..))
 import Network.Socket (PortNumber (..))
+import Prelude
 
 data RetrySettings = RetrySettings
     { _retryPolicy        :: !RetryPolicy

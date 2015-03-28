@@ -19,6 +19,7 @@ import Control.Monad.IO.Class
 import Database.CQL.IO.Types
 import Data.Map.Strict (Map)
 import Data.Unique
+import Prelude
 
 import qualified Data.Map.Strict as Map
 

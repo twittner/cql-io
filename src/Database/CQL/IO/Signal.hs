@@ -14,6 +14,7 @@ module Database.CQL.IO.Signal
 import Control.Applicative
 import Control.Concurrent (forkIO)
 import Data.IORef
+import Prelude
 
 newtype Signal a = Sig (IORef [a -> IO ()])
 
