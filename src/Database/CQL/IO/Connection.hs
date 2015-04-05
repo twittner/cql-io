@@ -182,7 +182,7 @@ readLoop v g set tck i sck syn s sref wlck =
         x <- readSocket v g i sck (set^.maxRecvBuffer)
         case fromStreamId $ streamId (fst x) of
             -1 ->
-                case parse (set^.compression) x :: Response () () () of
+                case parse (set^.compression) x :: Raw Response of
                     RsError _ e -> throwM e
                     RsEvent _ e -> emit s e
                     r           -> throwM (UnexpectedResponse' r)
@@ -270,16 +270,16 @@ startup :: MonadIO m => Connection -> m ()
 startup c = liftIO $ do
     let cmp = c^.settings.compression
     let req = RqStartup (Startup Cqlv300 (algorithm cmp))
-    let enc = serialise (c^.protocol) cmp (req :: Request () () ())
+    let enc = serialise (c^.protocol) cmp (req :: Raw Request)
     res <- request c enc
-    (parse cmp res :: Response () () ()) `seq` return ()
+    (parse cmp res :: Raw Response) `seq` return ()
 
 register :: MonadIO m => Connection -> [EventType] -> EventHandler -> m ()
 register c e f = liftIO $ do
-    let req = RqRegister (Register e) :: Request () () ()
+    let req = RqRegister (Register e) :: Raw Request
     let enc = serialise (c^.protocol) (c^.settings.compression) req
     res <- request c enc
-    case parse (c^.settings.compression) res :: Response () () () of
+    case parse (c^.settings.compression) res :: Raw Response of
         RsReady _ Ready -> c^.eventSig |-> f
         other           -> throwM (UnexpectedResponse' other)
 
@@ -292,9 +292,9 @@ validateSettings c = liftIO $ do
 
 supportedOptions :: MonadIO m => Connection -> m Supported
 supportedOptions c = liftIO $ do
-    let options = RqOptions Options :: Request () () ()
+    let options = RqOptions Options :: Raw Request
     res <- request c (serialise (c^.protocol) noCompression options)
-    case parse noCompression res :: Response () () () of
+    case parse noCompression res :: Raw Response of
         RsSupported _ x -> return x
         other           -> throwM (UnexpectedResponse' other)
 
@@ -305,7 +305,7 @@ useKeyspace c ks = liftIO $ do
         kspace = quoted (fromStrict $ unKeyspace ks)
         req    = RqQuery (Query (QueryString $ "use " <> kspace) params)
     res <- request c (serialise (c^.protocol) cmp req)
-    case parse cmp res :: Response () () () of
+    case parse cmp res :: Raw Response of
         RsResult _ (SetKeyspaceResult _) -> return ()
         other                            -> throwM (UnexpectedResponse' other)
 

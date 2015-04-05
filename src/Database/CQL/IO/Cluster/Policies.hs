@@ -32,22 +32,24 @@ data Policy = Policy
       -- nodes.
       -- Please note that a policy may be re-initialised at any point
       -- through this method.
-    , onEvent    :: HostEvent -> IO ()
+    , onEvent :: HostEvent -> IO ()
       -- ^ Event handler. Policies will be informed about cluster changes
       -- through this function.
-    , select     :: IO (Maybe Host)
+    , select :: IO (Maybe Host)
       -- ^ Host selection. The driver will ask for a host to use in a query
       -- through this function. A policy which has no available nodes my
       -- return Nothing.
+    , current :: IO [Host]
+      -- ^ Return all currently alive hosts.
     , acceptable :: Host -> IO Bool
       -- ^ During startup and node discovery, the driver will ask the
       -- policy if a dicovered host should be ignored.
-    , hostCount  :: IO Word
+    , hostCount :: IO Word
       -- ^ During query processing, the driver will ask the policy for
       -- a rough esitimate of alive hosts. The number is used to repeatedly
       -- invoke 'select' (with the underlying assumption that the policy
       -- returns mostly different hosts).
-    , display    :: IO String
+    , display :: IO String
       -- ^ Like having an effectful 'Show' instance for this policy.
     }
 
@@ -66,7 +68,8 @@ roundRobin = do
     h <- newTVarIO emptyHosts
     c <- newTVarIO 0
     return $ Policy (defSetup h) (defOnEvent h) (pickHost h c)
-                    defAcceptable (defHostCount h) (defDisplay h)
+                    (defCurrent h) defAcceptable (defHostCount h)
+                    (defDisplay h)
   where
     pickHost h c = atomically $ do
         m <- view alive <$> readTVar h
@@ -83,7 +86,8 @@ random = do
     h <- newTVarIO emptyHosts
     g <- createSystemRandom
     return $ Policy (defSetup h) (defOnEvent h) (pickHost h g)
-                    defAcceptable (defHostCount h) (defDisplay h)
+                    (defCurrent h) defAcceptable (defHostCount h)
+                    (defDisplay h)
   where
     pickHost h g = do
         m <- view alive <$> readTVarIO h
@@ -114,6 +118,9 @@ defSetup r a b = do
 
 defHostCount :: HostMap -> IO Word
 defHostCount r = fromIntegral . Map.size . view alive <$> readTVarIO r
+
+defCurrent :: HostMap -> IO [Host]
+defCurrent r = Map.elems . view alive <$> readTVarIO r
 
 defOnEvent :: HostMap -> HostEvent -> IO ()
 defOnEvent r (HostNew h) = atomically $ do

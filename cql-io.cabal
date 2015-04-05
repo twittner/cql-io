@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.13.2
+version:              0.14.0
 synopsis:             Cassandra CQL client.
 stability:            experimental
 license:              OtherLicense
@@ -49,6 +49,7 @@ library
 
     other-modules:
         Control.Retry
+        Database.CQL.IO.Batch
         Database.CQL.IO.Client
         Database.CQL.IO.Cluster.Discovery
         Database.CQL.IO.Cluster.Host
@@ -57,6 +58,7 @@ library
         Database.CQL.IO.Hexdump
         Database.CQL.IO.Jobs
         Database.CQL.IO.Pool
+        Database.CQL.IO.PrepQuery
         Database.CQL.IO.Protocol
         Database.CQL.IO.Settings
         Database.CQL.IO.Signal
@@ -72,6 +74,7 @@ library
         , bytestring         >= 0.10    && < 1.0
         , containers         >= 0.5     && < 1.0
         , cql                == 3.0.*
+        , cryptohash         >= 0.11    && < 0.20
         , data-default-class
         , exceptions         >= 0.4     && < 1.0
         , hashable           >= 1.2     && < 2.0

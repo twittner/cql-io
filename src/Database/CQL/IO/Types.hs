@@ -12,6 +12,7 @@ module Database.CQL.IO.Types where
 
 import Control.Monad.Catch
 import Data.IP
+import Data.Text.Lazy (Text)
 import Data.Typeable
 import Database.CQL.Protocol (Event, Response, CompressionAlgorithm)
 import Network.Socket (SockAddr (..), PortNumber)
@@ -20,6 +21,8 @@ import System.Logger.Message
 type EventHandler = Event -> IO ()
 
 newtype Milliseconds = Ms { ms :: Int } deriving (Eq, Show, Num)
+
+type Raw a = a () () ()
 
 -----------------------------------------------------------------------------
 -- InetAddr
@@ -130,6 +133,21 @@ instance Exception UnexpectedResponse
 instance Show UnexpectedResponse where
     show UnexpectedResponse      = "cql-io: unexpected response"
     show (UnexpectedResponse' r) = "cql-io: unexpected response: " ++ show r
+
+-----------------------------------------------------------------------------
+-- HashCollision
+
+data HashCollision = HashCollision !Text !Text
+    deriving Typeable
+
+instance Exception HashCollision
+
+instance Show HashCollision where
+    show (HashCollision a b) = showString "cql-io: hash collision: "
+                             . shows a
+                             . showString " "
+                             . shows b
+                             $ ""
 
 ignore :: IO () -> IO ()
 ignore a = catchAll a (const $ return ())

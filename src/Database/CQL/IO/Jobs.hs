@@ -32,18 +32,18 @@ newtype Jobs k = Jobs (TVar (Map k Job))
 new :: MonadIO m => m (Jobs k)
 new = liftIO $ Jobs <$> newTVarIO Map.empty
 
-add :: (MonadIO m, Ord k) => Jobs k -> k -> IO () -> m ()
-add (Jobs d) k j = liftIO $ do
+add :: (MonadIO m, Ord k) => Jobs k -> k -> Bool -> IO () -> m ()
+add (Jobs d) k replace j = liftIO $ do
     (ok, prev) <- atomically $ do
         m <- readTVar d
         case Map.lookup k m of
-            Just Reserved      -> return (False, Nothing)
-            Just (Running _ a) -> do
-                modifyTVar' d (Map.insert k Reserved)
-                return (True, Just a)
-            Nothing          -> do
+            Nothing -> do
                 modifyTVar' d (Map.insert k Reserved)
                 return (True, Nothing)
+            Just (Running _ a) | replace -> do
+                modifyTVar' d (Map.insert k Reserved)
+                return (True, Just a)
+            _ -> return (False, Nothing)
     when ok $ do
         maybe (return ()) (ignore . cancel) prev
         u <- newUnique
