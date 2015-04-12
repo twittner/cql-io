@@ -63,6 +63,7 @@ import Network
 import Network.Socket hiding (connect, close, recv, send)
 import Network.Socket.ByteString.Lazy (sendAll)
 import System.IO (nativeNewline, Newline (..))
+import System.IO.Error (mkIOError, illegalOperationErrorType)
 import System.Logger hiding (Settings, close, defSettings, settings)
 import System.Timeout
 import Prelude
@@ -88,6 +89,8 @@ data ConnectionSettings = ConnectionSettings
 
 type Streams = Vector (Sync (Header, ByteString))
 
+data SocketState = SocketAlive | SocketDead
+
 data Connection = Connection
     { _settings :: !ConnectionSettings
     , _address  :: !InetAddr
@@ -95,7 +98,7 @@ data Connection = Connection
     , _protocol :: !Version
     , _sock     :: !Socket
     , _streams  :: !Streams
-    , _wLock    :: !(MVar ())
+    , _wLock    :: !(MVar SocketState)
     , _reader   :: !(Async ())
     , _tickets  :: !Pool
     , _logger   :: !Logger
@@ -144,9 +147,9 @@ connect t m v g a = liftIO $
     open s = do
         tck <- Tickets.pool (t^.maxStreams)
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
-        lck <- newMVar ()
+        lck <- newMVar SocketAlive
         sig <- signal
-        rdr <- async (readLoop v g t tck a s syn sig)
+        rdr <- async (readLoop v g t tck a s syn sig lck)
         Connection t a m v s syn lck rdr tck g sig <$> newUnique
 
 mkSock :: InetAddr -> IO Socket
@@ -161,8 +164,8 @@ ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
     fromMaybe False <$> timeout 5000000
         ((S.connect s (sockAddr a) >> return True) `catchAll` const (return False))
 
-readLoop :: Version -> Logger -> ConnectionSettings -> Pool -> InetAddr -> Socket -> Streams -> Signal Event -> IO ()
-readLoop v g set tck i sck syn s = run `catch` logException `finally` cleanup
+readLoop :: Version -> Logger -> ConnectionSettings -> Pool -> InetAddr -> Socket -> Streams -> Signal Event -> MVar SocketState -> IO ()
+readLoop v g set tck i sck syn s lck = run `catch` logException `finally` cleanup
   where
     run = forever $ do
         x <- readSocket v g i sck (set^.maxRecvBuffer)
@@ -180,7 +183,10 @@ readLoop v g set tck i sck syn s = run `catch` logException `finally` cleanup
     cleanup = do
         Tickets.close (ConnectionClosed i) tck
         Vector.mapM_ (Sync.close (ConnectionClosed i)) syn
-        S.close sck
+        S.shutdown sck S.ShutdownBoth
+        modifyMVar_ lck $ \_ -> do
+            S.close sck
+            return SocketDead
 
     logException :: SomeException -> IO ()
     logException e = case fromException e of
@@ -200,8 +206,10 @@ request c f = send >>= receive
             ~~ "stream" .= i
             ~~ "type"   .= val "request"
             ~~ msg' (hexdump (L.take 160 req))
-        withMVar (c^.wLock) $
-            const $ sendAll (c^.sock) req
+        withMVar (c^.wLock) $ \ss ->
+            case ss of
+                SocketAlive -> sendAll (c^.sock) req
+                SocketDead  -> throwM $ mkIOError illegalOperationErrorType "Socket closed" Nothing Nothing
         return i
 
     receive i = do
