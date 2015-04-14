@@ -135,14 +135,14 @@ resolve host port =
     hints = defaultHints { addrFlags = [AI_ADDRCONFIG], addrSocketType = Stream }
 
 connect :: MonadIO m => ConnectionSettings -> TimeoutManager -> Version -> Logger -> InetAddr -> m Connection
-connect t m v g a = liftIO $
-    bracketOnError (mkSock a) S.close $ \s -> do
+connect t m v g a = liftIO $ do
+    c <- bracketOnError (mkSock a) S.close $ \s -> do
         ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s (sockAddr a))
         unless (isJust ok) $
             throwM (ConnectTimeout a)
-        c <- open s
-        validateSettings c
-        return c
+        open s -- once this has happened, the reader thread owns the socket, so bracketOnError has to end
+    validateSettings c `onException` cancel (c^.reader)
+    return c
   where
     open s = do
         tck <- Tickets.pool (t^.maxStreams)
