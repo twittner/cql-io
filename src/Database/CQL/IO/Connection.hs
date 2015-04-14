@@ -135,14 +135,14 @@ resolve host port =
     hints = defaultHints { addrFlags = [AI_ADDRCONFIG], addrSocketType = Stream }
 
 connect :: MonadIO m => ConnectionSettings -> TimeoutManager -> Version -> Logger -> InetAddr -> m Connection
-connect t m v g a = liftIO $
-    bracketOnError (mkSock a) S.close $ \s -> do
+connect t m v g a = liftIO $ do
+    c <- bracketOnError (mkSock a) S.close $ \s -> do
         ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s (sockAddr a))
         unless (isJust ok) $
             throwM (ConnectTimeout a)
-        c <- open s
-        validateSettings c
-        return c
+        open s -- once this has happened, the reader thread owns the socket, so bracketOnError has to end
+    validateSettings c `onException` cancel (c^.reader)
+    return c
   where
     open s = do
         tck <- Tickets.pool (t^.maxStreams)
@@ -180,7 +180,13 @@ readLoop v g set tck i sck syn s lck = run `catch` logException `finally` cleanu
                 unless ok $
                     markAvailable tck sid
 
-    cleanup = do
+    -- This doesn't have to happen immediately (just "soon"); running
+    -- it asynchronously prevents FD leaks in a scenario where the
+    -- 'run' loop terminates _just_ before 'close' happens.  If the
+    -- cancel performed by 'close' were to happen while the reader is
+    -- blocked in modifyMVar_ (I don't believe Tickets.close nor
+    -- Sync.close can block), the socket would be leaked.
+    cleanup = async $ do
         Tickets.close (ConnectionClosed i) tck
         Vector.mapM_ (Sync.close (ConnectionClosed i)) syn
         S.shutdown sck S.ShutdownBoth
