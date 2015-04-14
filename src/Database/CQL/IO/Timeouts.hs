@@ -54,11 +54,18 @@ create (Ms n) = TimeoutManager n <$> mkReaper defaultReaperSettings
     newState (Running k) = Running (k - 1)
     newState s           = s
 
+uncanceledAction :: Action -> IO ()
+uncanceledAction a = do
+    s <- atomically $ readTVar (state a)
+    case s of
+       Running _ -> action a
+       Canceled -> return ()
+
 destroy :: TimeoutManager -> Bool -> IO ()
 destroy tm exec = mask_ $ do
     a <- reaperStop (reaper tm)
     when exec $
-        mapM_ (ignore . action) a
+        mapM_ (ignore . uncanceledAction) a
 
 add :: TimeoutManager -> Milliseconds -> IO () -> IO Action
 add tm (Ms n) a = do
