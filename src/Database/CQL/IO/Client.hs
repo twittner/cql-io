@@ -28,7 +28,7 @@ module Database.CQL.IO.Client
 
 import Control.Applicative
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async)
+import Control.Concurrent.Async (async, wait)
 import Control.Concurrent.STM hiding (retry)
 import Control.Exception (IOException)
 import Control.Lens hiding ((.=), Context)
@@ -390,13 +390,17 @@ mkPool ctx i = liftIO $ do
 -- Termination
 
 -- | Terminate client state, i.e. end all running background checks and
--- shutdown all connection pools.
+-- shutdown all connection pools.  Once this is entered, the client
+-- will eventually be shut down, though an asynchronous exception can
+-- interrupt the wait for that to occur.
 shutdown :: MonadIO m => ClientState -> m ()
-shutdown s = liftIO $ do
-    TM.destroy (s^.context.timeouts) True
-    Jobs.destroy (s^.jobs)
-    ignore $ C.close . view connection =<< readTVarIO (s^.control)
-    mapM_ destroy . Map.elems =<< readTVarIO (s^.hostmap)
+shutdown s = liftIO $ asyncShutdown >>= wait
+  where
+    asyncShutdown = async $ do
+        TM.destroy (s^.context.timeouts) True
+        Jobs.destroy (s^.jobs)
+        ignore $ C.close . view connection =<< readTVarIO (s^.control)
+        mapM_ destroy . Map.elems =<< readTVarIO (s^.hostmap)
 
 -----------------------------------------------------------------------------
 -- Monitoring
