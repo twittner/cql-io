@@ -4,8 +4,8 @@
 
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell     #-}
 
 module Database.CQL.IO.Connection
     ( Connection
@@ -34,9 +34,10 @@ module Database.CQL.IO.Connection
     ) where
 
 import Control.Applicative
-import Control.Concurrent (myThreadId)
+import Control.Concurrent (myThreadId, forkIOWithUnmask)
 import Control.Concurrent.Async
 import Control.Concurrent.MVar
+import Control.Concurrent.STM
 import Control.Exception (throwTo, AsyncException (ThreadKilled))
 import Control.Lens ((^.), makeLenses, view)
 import Control.Monad
@@ -63,7 +64,6 @@ import Network
 import Network.Socket hiding (connect, close, recv, send)
 import Network.Socket.ByteString.Lazy (sendAll)
 import System.IO (nativeNewline, Newline (..))
-import System.IO.Error (mkIOError, illegalOperationErrorType)
 import System.Logger hiding (Settings, close, defSettings, settings)
 import System.Timeout
 import Prelude
@@ -89,16 +89,15 @@ data ConnectionSettings = ConnectionSettings
 
 type Streams = Vector (Sync (Header, ByteString))
 
-data SocketState = SocketAlive | SocketDead
-
 data Connection = Connection
     { _settings :: !ConnectionSettings
     , _address  :: !InetAddr
     , _tmanager :: !TimeoutManager
     , _protocol :: !Version
     , _sock     :: !Socket
+    , _status   :: !(TVar Bool)
     , _streams  :: !Streams
-    , _wLock    :: !(MVar SocketState)
+    , _wLock    :: !(MVar ())
     , _reader   :: !(Async ())
     , _tickets  :: !Pool
     , _logger   :: !Logger
@@ -140,17 +139,18 @@ connect t m v g a = liftIO $ do
         ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s (sockAddr a))
         unless (isJust ok) $
             throwM (ConnectTimeout a)
-        open s -- once this has happened, the reader thread owns the socket, so bracketOnError has to end
-    validateSettings c `onException` cancel (c^.reader)
+        open s
+    validateSettings c `onException` close c
     return c
   where
     open s = do
         tck <- Tickets.pool (t^.maxStreams)
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
-        lck <- newMVar SocketAlive
+        lck <- newMVar ()
+        sta <- newTVarIO True
         sig <- signal
-        rdr <- async (readLoop v g t tck a s syn sig lck)
-        Connection t a m v s syn lck rdr tck g sig <$> newUnique
+        rdr <- async (readLoop v g t tck a s syn sig sta lck)
+        Connection t a m v s sta syn lck rdr tck g sig <$> newUnique
 
 mkSock :: InetAddr -> IO Socket
 mkSock (InetAddr a) = socket (familyOf a) Stream defaultProtocol
@@ -164,8 +164,19 @@ ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
     fromMaybe False <$> timeout 5000000
         ((S.connect s (sockAddr a) >> return True) `catchAll` const (return False))
 
-readLoop :: Version -> Logger -> ConnectionSettings -> Pool -> InetAddr -> Socket -> Streams -> Signal Event -> MVar SocketState -> IO ()
-readLoop v g set tck i sck syn s lck = run `catch` logException `finally` cleanup
+readLoop :: Version
+         -> Logger
+         -> ConnectionSettings
+         -> Pool
+         -> InetAddr
+         -> Socket
+         -> Streams
+         -> Signal Event
+         -> TVar Bool
+         -> MVar ()
+         -> IO ()
+readLoop v g set tck i sck syn s sref wlck =
+    run `catch` logException `finally` cleanup
   where
     run = forever $ do
         x <- readSocket v g i sck (set^.maxRecvBuffer)
@@ -180,13 +191,14 @@ readLoop v g set tck i sck syn s lck = run `catch` logException `finally` cleanu
                 unless ok $
                     markAvailable tck sid
 
-    cleanup = do
-        Tickets.close (ConnectionClosed i) tck
-        Vector.mapM_ (Sync.close (ConnectionClosed i)) syn
-        S.shutdown sck S.ShutdownBoth
-        modifyMVar_ lck $ \_ -> do
-            S.close sck
-            return SocketDead
+    cleanup = uninterruptibleMask_ $ do
+        isOpen <- atomically $ swapTVar sref False
+        when isOpen $ do
+            Tickets.close (ConnectionClosed i) tck
+            Vector.mapM_ (Sync.close (ConnectionClosed i)) syn
+            void $ forkIOWithUnmask $ \unmask -> unmask $ do
+                shutdown sck ShutdownReceive
+                withMVar wlck (const $ S.close sck)
 
     logException :: SomeException -> IO ()
     logException e = case fromException e of
@@ -206,10 +218,12 @@ request c f = send >>= receive
             ~~ "stream" .= i
             ~~ "type"   .= val "request"
             ~~ msg' (hexdump (L.take 160 req))
-        withMVar (c^.wLock) $ \ss ->
-            case ss of
-                SocketAlive -> sendAll (c^.sock) req
-                SocketDead  -> throwM $ mkIOError illegalOperationErrorType "Socket closed" Nothing Nothing
+        withMVar (c^.wLock) $ const $ do
+            isOpen <- readTVarIO (c^.status)
+            if isOpen then
+                sendAll (c^.sock) req
+            else
+                throwM $ ConnectionClosed (c^.address)
         return i
 
     receive i = do
