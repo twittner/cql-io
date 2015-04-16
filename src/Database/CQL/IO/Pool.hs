@@ -75,7 +75,7 @@ data Resource = Resource
     } deriving Show
 
 data Box
-    = New  !Resource
+    = New  !(IO Resource)
     | Used !Resource
     | Empty
 
@@ -140,34 +140,35 @@ handlers p s r =
             else put p s r incrTimeouts
 
 take1 :: Pool -> Stripe -> IO (Maybe Resource)
-take1 p s = do
-    r <- join . atomically $ do
+take1 p s = uninterruptibleMask $ \unmask -> do
+    r <- atomically $ do
         c <- readTVar (conns s)
         u <- readTVar (inUse s)
-        let n       = Seq.length c
+        let n = Seq.length c
+        check (u == n)
         let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
         if | u < p^.settings.maxConnections -> mkNew p s u
            | n > 0 && refcnt r < p^.maxRefs -> use s r rr
-           | otherwise                      -> return (return Empty)
+           | otherwise                      -> return Empty
     case r of
-        New x -> do
+        New io -> unmask io >>= \x -> do
             atomically (modifyTVar' (conns s) (|> x))
             return (Just x)
         Used x -> return (Just x)
         Empty  -> return Nothing
 
-use :: Stripe -> Resource -> Seq Resource -> STM (IO Box)
+use :: Stripe -> Resource -> Seq Resource -> STM Box
 use s r rr = do
     writeTVar (conns s) $! rr |> r { refcnt = refcnt r + 1 }
-    return (return (Used r))
+    return (Used r)
 {-# INLINE use #-}
 
-mkNew :: Pool -> Stripe -> Int -> STM (IO Box)
+mkNew :: Pool -> Stripe -> Int -> STM Box
 mkNew p s u = do
     writeTVar (inUse s) $! u + 1
-    return $ New <$> onException
-        (Resource <$> p^.currentTime <*> pure 1 <*> pure 0 <*> p^.createFn)
-        (atomically (modifyTVar' (inUse s) (subtract 1)))
+    return (New $ mk `onException` atomically (modifyTVar' (inUse s) (subtract 1)))
+  where
+    mk = Resource <$> p^.currentTime <*> pure 1 <*> pure 0 <*> p^.createFn
 {-# INLINE mkNew #-}
 
 put :: Pool -> Stripe -> Resource -> (Resource -> Resource) -> IO ()
