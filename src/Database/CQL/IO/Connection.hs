@@ -127,9 +127,9 @@ defSettings =
                        Nothing       -- keyspace
                        16384         -- receive buffer size
 
-resolve :: String -> PortNumber -> IO InetAddr
+resolve :: String -> PortNumber -> IO [InetAddr]
 resolve host port =
-    InetAddr . addrAddress . head <$> getAddrInfo (Just hints) (Just host) (Just (show port))
+    map (InetAddr . addrAddress) <$> getAddrInfo (Just hints) (Just host) (Just (show port))
   where
     hints = defaultHints { addrFlags = [AI_ADDRCONFIG], addrSocketType = Stream }
 
