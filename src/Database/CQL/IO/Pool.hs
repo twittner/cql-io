@@ -147,11 +147,14 @@ take1 p s = uninterruptibleMask $ \unmask -> do
         let n = Seq.length c
         check (u == n)
         let r :< rr = Seq.viewl $ Seq.unstableSortBy (compare `on` refcnt) c
-        if | u < p^.settings.maxConnections -> mkNew p s u
+        if | u < p^.settings.maxConnections -> do
+                writeTVar (inUse s) $! u + 1
+                mkNew p
            | n > 0 && refcnt r < p^.maxRefs -> use s r rr
            | otherwise                      -> return Empty
     case r of
-        New io -> unmask io >>= \x -> do
+        New io -> do
+            x <- unmask io `onException` atomically (modifyTVar' (inUse s) (subtract 1))
             atomically (modifyTVar' (conns s) (|> x))
             return (Just x)
         Used x -> return (Just x)
@@ -163,12 +166,8 @@ use s r rr = do
     return (Used r)
 {-# INLINE use #-}
 
-mkNew :: Pool -> Stripe -> Int -> STM Box
-mkNew p s u = do
-    writeTVar (inUse s) $! u + 1
-    return (New $ mk `onException` atomically (modifyTVar' (inUse s) (subtract 1)))
-  where
-    mk = Resource <$> p^.currentTime <*> pure 1 <*> pure 0 <*> p^.createFn
+mkNew :: Pool -> STM Box
+mkNew p = return (New $ Resource <$> p^.currentTime <*> pure 1 <*> pure 0 <*> p^.createFn)
 {-# INLINE mkNew #-}
 
 put :: Pool -> Stripe -> Resource -> (Resource -> Resource) -> IO ()
