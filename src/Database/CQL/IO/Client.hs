@@ -318,7 +318,10 @@ init g s = liftIO $ do
     return x
   where
     mkConnection t h = do
-        a <- C.resolve h (s^.portnumber)
+        as <- C.resolve h (s^.portnumber)
+        NE.fromList as `tryAll` doConnect t
+
+    doConnect t a = do
         Logger.debug g $ msg (val "connecting to " +++ a)
         c <- C.connect (s^.connSettings) t (s^.protoVersion) g a
         Logger.info g $ msg (val "control connection: " +++ c)
