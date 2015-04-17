@@ -140,7 +140,7 @@ handlers p s r =
             else put p s r incrTimeouts
 
 take1 :: Pool -> Stripe -> IO (Maybe Resource)
-take1 p s = uninterruptibleMask $ \unmask -> do
+take1 p s = do
     r <- atomically $ do
         c <- readTVar (conns s)
         u <- readTVar (inUse s)
@@ -154,7 +154,7 @@ take1 p s = uninterruptibleMask $ \unmask -> do
            | otherwise                      -> return Empty
     case r of
         New io -> do
-            x <- unmask io `onException` atomically (modifyTVar' (inUse s) (subtract 1))
+            x <- io `onException` atomically (modifyTVar' (inUse s) (subtract 1))
             atomically (modifyTVar' (conns s) (|> x))
             return (Just x)
         Used x -> return (Just x)
