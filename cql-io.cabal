@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.14.1
+version:              0.14.2
 synopsis:             Cassandra CQL client.
 stability:            experimental
 license:              OtherLicense
@@ -35,6 +35,10 @@ description:
     .
     * /Customisable retry settings/. Support for default retry settings as well
     as local overrides per query.
+    .
+    * /Prepared queries/. Prepared queries are an optimisation which parse
+    and prepare a query only once on Cassandra nodes but execute it many
+    times with different concrete values.
 
 source-repository head
     type:             git
