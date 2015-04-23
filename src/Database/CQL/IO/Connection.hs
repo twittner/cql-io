@@ -4,8 +4,8 @@
 
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell     #-}
 
 module Database.CQL.IO.Connection
     ( Connection
@@ -34,9 +34,10 @@ module Database.CQL.IO.Connection
     ) where
 
 import Control.Applicative
-import Control.Concurrent (myThreadId)
+import Control.Concurrent (myThreadId, forkIOWithUnmask)
 import Control.Concurrent.Async
 import Control.Concurrent.MVar
+import Control.Concurrent.STM
 import Control.Exception (throwTo, AsyncException (ThreadKilled))
 import Control.Lens ((^.), makeLenses, view)
 import Control.Monad
@@ -94,6 +95,7 @@ data Connection = Connection
     , _tmanager :: !TimeoutManager
     , _protocol :: !Version
     , _sock     :: !Socket
+    , _status   :: !(TVar Bool)
     , _streams  :: !Streams
     , _wLock    :: !(MVar ())
     , _reader   :: !(Async ())
@@ -125,29 +127,30 @@ defSettings =
                        Nothing       -- keyspace
                        16384         -- receive buffer size
 
-resolve :: String -> PortNumber -> IO InetAddr
+resolve :: String -> PortNumber -> IO [InetAddr]
 resolve host port =
-    InetAddr . addrAddress . head <$> getAddrInfo (Just hints) (Just host) (Just (show port))
+    map (InetAddr . addrAddress) <$> getAddrInfo (Just hints) (Just host) (Just (show port))
   where
     hints = defaultHints { addrFlags = [AI_ADDRCONFIG], addrSocketType = Stream }
 
 connect :: MonadIO m => ConnectionSettings -> TimeoutManager -> Version -> Logger -> InetAddr -> m Connection
-connect t m v g a = liftIO $
-    bracketOnError (mkSock a) S.close $ \s -> do
+connect t m v g a = liftIO $ do
+    c <- bracketOnError (mkSock a) S.close $ \s -> do
         ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s (sockAddr a))
         unless (isJust ok) $
             throwM (ConnectTimeout a)
-        c <- open s
-        validateSettings c
-        return c
+        open s
+    validateSettings c `onException` close c
+    return c
   where
     open s = do
         tck <- Tickets.pool (t^.maxStreams)
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
         lck <- newMVar ()
+        sta <- newTVarIO True
         sig <- signal
-        rdr <- async (readLoop v g t tck a s syn sig)
-        Connection t a m v s syn lck rdr tck g sig <$> newUnique
+        rdr <- async (readLoop v g t tck a s syn sig sta lck)
+        Connection t a m v s sta syn lck rdr tck g sig <$> newUnique
 
 mkSock :: InetAddr -> IO Socket
 mkSock (InetAddr a) = socket (familyOf a) Stream defaultProtocol
@@ -161,14 +164,25 @@ ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
     fromMaybe False <$> timeout 5000000
         ((S.connect s (sockAddr a) >> return True) `catchAll` const (return False))
 
-readLoop :: Version -> Logger -> ConnectionSettings -> Pool -> InetAddr -> Socket -> Streams -> Signal Event -> IO ()
-readLoop v g set tck i sck syn s = run `catch` logException `finally` cleanup
+readLoop :: Version
+         -> Logger
+         -> ConnectionSettings
+         -> Pool
+         -> InetAddr
+         -> Socket
+         -> Streams
+         -> Signal Event
+         -> TVar Bool
+         -> MVar ()
+         -> IO ()
+readLoop v g set tck i sck syn s sref wlck =
+    run `catch` logException `finally` cleanup
   where
     run = forever $ do
         x <- readSocket v g i sck (set^.maxRecvBuffer)
         case fromStreamId $ streamId (fst x) of
             -1 ->
-                case parse (set^.compression) x :: Response () () () of
+                case parse (set^.compression) x :: Raw Response of
                     RsError _ e -> throwM e
                     RsEvent _ e -> emit s e
                     r           -> throwM (UnexpectedResponse' r)
@@ -177,10 +191,14 @@ readLoop v g set tck i sck syn s = run `catch` logException `finally` cleanup
                 unless ok $
                     markAvailable tck sid
 
-    cleanup = do
-        Tickets.close (ConnectionClosed i) tck
-        Vector.mapM_ (Sync.close (ConnectionClosed i)) syn
-        S.close sck
+    cleanup = uninterruptibleMask_ $ do
+        isOpen <- atomically $ swapTVar sref False
+        when isOpen $ do
+            Tickets.close (ConnectionClosed i) tck
+            Vector.mapM_ (Sync.close (ConnectionClosed i)) syn
+            void $ forkIOWithUnmask $ \unmask -> unmask $ do
+                shutdown sck ShutdownReceive
+                withMVar wlck (const $ S.close sck)
 
     logException :: SomeException -> IO ()
     logException e = case fromException e of
@@ -200,8 +218,12 @@ request c f = send >>= receive
             ~~ "stream" .= i
             ~~ "type"   .= val "request"
             ~~ msg' (hexdump (L.take 160 req))
-        withMVar (c^.wLock) $
-            const $ sendAll (c^.sock) req
+        withMVar (c^.wLock) $ const $ do
+            isOpen <- readTVarIO (c^.status)
+            if isOpen then
+                sendAll (c^.sock) req
+            else
+                throwM $ ConnectionClosed (c^.address)
         return i
 
     receive i = do
@@ -248,16 +270,16 @@ startup :: MonadIO m => Connection -> m ()
 startup c = liftIO $ do
     let cmp = c^.settings.compression
     let req = RqStartup (Startup Cqlv300 (algorithm cmp))
-    let enc = serialise (c^.protocol) cmp (req :: Request () () ())
+    let enc = serialise (c^.protocol) cmp (req :: Raw Request)
     res <- request c enc
-    (parse cmp res :: Response () () ()) `seq` return ()
+    (parse cmp res :: Raw Response) `seq` return ()
 
 register :: MonadIO m => Connection -> [EventType] -> EventHandler -> m ()
 register c e f = liftIO $ do
-    let req = RqRegister (Register e) :: Request () () ()
+    let req = RqRegister (Register e) :: Raw Request
     let enc = serialise (c^.protocol) (c^.settings.compression) req
     res <- request c enc
-    case parse (c^.settings.compression) res :: Response () () () of
+    case parse (c^.settings.compression) res :: Raw Response of
         RsReady _ Ready -> c^.eventSig |-> f
         other           -> throwM (UnexpectedResponse' other)
 
@@ -270,9 +292,9 @@ validateSettings c = liftIO $ do
 
 supportedOptions :: MonadIO m => Connection -> m Supported
 supportedOptions c = liftIO $ do
-    let options = RqOptions Options :: Request () () ()
+    let options = RqOptions Options :: Raw Request
     res <- request c (serialise (c^.protocol) noCompression options)
-    case parse noCompression res :: Response () () () of
+    case parse noCompression res :: Raw Response of
         RsSupported _ x -> return x
         other           -> throwM (UnexpectedResponse' other)
 
@@ -283,7 +305,7 @@ useKeyspace c ks = liftIO $ do
         kspace = quoted (fromStrict $ unKeyspace ks)
         req    = RqQuery (Query (QueryString $ "use " <> kspace) params)
     res <- request c (serialise (c^.protocol) cmp req)
-    case parse cmp res :: Response () () () of
+    case parse cmp res :: Raw Response of
         RsResult _ (SetKeyspaceResult _) -> return ()
         other                            -> throwM (UnexpectedResponse' other)
 

@@ -1,0 +1,16 @@
+Maintainers
+-----------
+
+- Toralf Wittner <tw@dtex.org>
+
+Original Authors
+----------------
+
+- Toralf Wittner <tw@dtex.org>
+
+Contributors
+------------
+
+- Ricardo Catalinas Jiménez <jimenezrick@gmail.com>
+- Robert J. Macomber <robert.macomber@socrata.com>
+- Roman S. Borschel <roman.borschel@googlemail.com>

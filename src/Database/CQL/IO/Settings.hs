@@ -22,6 +22,11 @@ import Database.CQL.IO.Types (Milliseconds (..))
 import Network.Socket (PortNumber (..))
 import Prelude
 
+data PrepareStrategy
+    = EagerPrepare -- ^ cluster-wide preparation
+    | LazyPrepare  -- ^ on-demand per node preparation
+    deriving (Eq, Ord, Show)
+
 data RetrySettings = RetrySettings
     { _retryPolicy        :: !RetryPolicy
     , _reducedConsistency :: !(Maybe Consistency)
@@ -37,6 +42,7 @@ data Settings = Settings
     , _portnumber    :: !PortNumber
     , _contacts      :: !(NonEmpty String)
     , _policyMaker   :: !(IO Policy)
+    , _prepStrategy  :: !PrepareStrategy
     }
 
 makeLenses ''RetrySettings
@@ -66,6 +72,8 @@ makeLenses ''Settings
 -- * no default keyspace is used.
 --
 -- * no retries are done
+--
+-- * lazy prepare strategy
 defSettings :: Settings
 defSettings = Settings
     P.defSettings
@@ -75,6 +83,7 @@ defSettings = Settings
     (fromInteger 9042)
     ("localhost" :| [])
     random
+    LazyPrepare
 
 -----------------------------------------------------------------------------
 -- Settings
@@ -99,6 +108,10 @@ setPortNumber v = set portnumber v
 -- | Set the load-balancing policy.
 setPolicy :: IO Policy -> Settings -> Settings
 setPolicy v = set policyMaker v
+
+-- | Set strategy to use for preparing statements.
+setPrepareStrategy :: PrepareStrategy -> Settings -> Settings
+setPrepareStrategy v = set prepStrategy v
 
 -----------------------------------------------------------------------------
 -- Pool Settings

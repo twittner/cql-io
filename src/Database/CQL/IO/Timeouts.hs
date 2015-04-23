@@ -57,8 +57,11 @@ create (Ms n) = TimeoutManager n <$> mkReaper defaultReaperSettings
 destroy :: TimeoutManager -> Bool -> IO ()
 destroy tm exec = mask_ $ do
     a <- reaperStop (reaper tm)
-    when exec $
-        mapM_ (ignore . action) a
+    when exec $ mapM_ f a
+  where
+    f e = readTVarIO (state e) >>= \s -> case s of
+        Running _ -> ignore (action e)
+        Canceled  -> return ()
 
 add :: TimeoutManager -> Milliseconds -> IO () -> IO Action
 add tm (Ms n) a = do
