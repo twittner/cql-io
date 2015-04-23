@@ -1,3 +1,7 @@
+0.14.2
+------
+- Export `PrepareStrategy` from `Database.CQL.IO`
+
 0.14.1
 ------
 - Support for prepared queries

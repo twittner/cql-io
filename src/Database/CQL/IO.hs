@@ -55,6 +55,7 @@
 module Database.CQL.IO
     ( -- * Client settings
       Settings
+    , PrepareStrategy (..)
     , defSettings
     , addContact
     , setCompression
