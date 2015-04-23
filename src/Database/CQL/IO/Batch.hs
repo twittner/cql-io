@@ -2,6 +2,7 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+{-# LANGUAGE CPP                        #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Database.CQL.IO.Batch
@@ -72,3 +73,10 @@ setConsistency c = BatchM $ modify' $ \b -> b { batchConsistency = c }
 -- | Set 'Batch' serial consistency.
 setSerialConsistency :: SerialConsistency -> BatchM ()
 setSerialConsistency c = BatchM $ modify' $ \b -> b { batchSerialConsistency = Just c }
+
+#if ! MIN_VERSION_transformers(0,4,0)
+modify' :: Monad m => (s -> s) -> StateT s m ()
+modify' f = do
+    s <- get
+    put $! f s
+#endif
