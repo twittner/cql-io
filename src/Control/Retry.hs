@@ -1,4 +1,4 @@
--- This is a copy of Ozgun Ataman's retry module version 0.5.1
+-- This is a copy of Ozgun Ataman's retry module version 0.6
 -- available from http://hackage.haskell.org/package/retry
 --
 -- It includes changes introduced by pull request 17 in
@@ -7,11 +7,13 @@
 -- If PR 17 is merged into upstream it can be removed again.
 
 {-# LANGUAGE BangPatterns          #-}
+{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE RecordWildCards       #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE ViewPatterns          #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -42,12 +44,14 @@ module Control.Retry
     , retrying
     , recovering
     , recoverAll
+    , logRetries
 
     -- * Retry Policies
     , constantDelay
     , exponentialBackoff
     , fibonacciBackoff
     , limitRetries
+    , limitRetriesByDelay
     , capDelay
 
     -- * Re-export from Data.Monoid
@@ -67,7 +71,7 @@ import           Data.Monoid
 
 -------------------------------------------------------------------------------
 -- | A 'RetryPolicy' is a function that takes an iteration number and
--- possibly returns a delay in miliseconds. *Nothing* implies we have
+-- possibly returns a delay in microseconds. *Nothing* implies we have
 -- reached the retry limit.
 --
 -- Please note that 'RetryPolicy' is a 'Monoid'. You can collapse
@@ -87,7 +91,7 @@ import           Data.Monoid
 -- One can easily define an exponential backoff policy with a limited
 -- number of retries:
 --
--- >> limitedBackoff = exponentialBackoff 50 <> limitedRetries 5
+-- >> limitedBackoff = exponentialBackoff 50 <> limitRetries 5
 --
 -- Naturally, 'mempty' will retry immediately (delay 0) for an
 -- unlimited number of retries, forming the identity for the 'Monoid'.
@@ -123,6 +127,20 @@ limitRetries i = RetryPolicy $ \ n -> if n >= i then Nothing else (Just 0)
 
 
 -------------------------------------------------------------------------------
+-- | Add an upperbound to a policy such that once the given time-delay
+-- amount has been reached or exceeded, the policy will stop retrying
+-- and fail.
+limitRetriesByDelay
+    :: Int
+    -- ^ Time-delay limit in microseconds.
+    -> RetryPolicy
+    -> RetryPolicy
+limitRetriesByDelay i p = RetryPolicy $ \ n -> getRetryPolicy p n >>= limit
+  where
+    limit delay = if delay >= i then Nothing else Just delay
+
+
+-------------------------------------------------------------------------------
 -- | Implement a constant delay with unlimited retries.
 constantDelay
     :: Int
@@ -153,8 +171,12 @@ fibonacciBackoff base = RetryPolicy $ \ n -> Just $ fib (n + 1) (0, base)
 
 
 -------------------------------------------------------------------------------
--- | Set an upperbound for any delays that may be directed by the
--- given policy.
+-- | Set a time-upperbound for any delays that may be directed by the
+-- given policy.  This function does not terminate the retrying.  The policy
+-- `capDelay maxDelay (exponentialBackoff n)` will never stop retrying.  It
+-- will reach a state where it retries forever with a delay of `maxDelay`
+-- between each one.  To get termination you need to use one of the
+-- 'limitRetries' function variants.
 capDelay
     :: Int
     -- ^ A maximum delay in microseconds
@@ -173,7 +195,7 @@ capDelay limit p = RetryPolicy $ \ n -> min limit `fmap` (getRetryPolicy p) n
 --
 -- >>> import Data.Maybe
 -- >>> let f = putStrLn "Running action" >> return Nothing
--- >>> retrying def isNothing f
+-- >>> retrying def (const $ return . isNothing) f
 -- Running action
 -- Running action
 -- Running action
@@ -224,7 +246,12 @@ retrying (RetryPolicy policy) chk f = go 0
 -- Running action
 -- Running action
 -- *** Exception: this is an error
-recoverAll :: (MonadIO m, MonadCatch m)
+recoverAll
+#if MIN_VERSION_exceptions(0, 6, 0)
+         :: (MonadIO m, MonadMask m)
+#else
+         :: (MonadIO m, MonadCatch m)
+#endif
          => RetryPolicy
          -> (Int -> m a)
          -> m a
@@ -236,35 +263,62 @@ recoverAll set f = recovering set [h] f
 -------------------------------------------------------------------------------
 -- | Run an action and recover from a raised exception by potentially
 -- retrying the action a number of times.
-recovering :: forall m a. (MonadIO m, MonadCatch m)
+recovering
+#if MIN_VERSION_exceptions(0, 6, 0)
+           :: (MonadIO m, MonadMask m)
+#else
+           :: (MonadIO m, MonadCatch m)
+#endif
            => RetryPolicy
-           -- ^ Just use 'def' faor default settings
+           -- ^ Just use 'def' for default settings
            -> [(Int -> Handler m Bool)]
            -- ^ Should a given exception be retried? Action will be
            -- retried if this returns True.
            -> (Int -> m a)
            -- ^ Action to perform
            -> m a
-recovering (RetryPolicy policy) hs f = go 0
+recovering (RetryPolicy policy) hs f = mask $ \restore -> go restore 0
     where
+      go restore = loop
+        where
+          loop n = do
+            r <- try $ restore (f n)
+            case r of
+              Right x -> return x
+              Left e -> recover (e :: SomeException) hs
+            where
+              recover e [] = throwM e
+              recover e ((($ n) -> Handler h) : hs')
+                | Just e' <- fromException e = do
+                    chk <- h e'
+                    if chk
+                      then case policy n of
+                        Just delay -> do
+                          liftIO $ threadDelay delay
+                          loop $! n+1
+                        Nothing -> throwM e'
+                      else throwM e'
+                | otherwise = recover e hs'
 
-      -- | Convert a (e -> m Bool) handler into (e -> m a) so it can
-      -- be wired into the 'catches' combinator.
-      transHandler :: Int -> Handler m Bool -> Handler m a
-      transHandler n (Handler h) = Handler $ \ e -> do
-          chk <- h e
-          case chk of
-            True ->
-              case policy n of
-                Just delay -> do
-                  liftIO (threadDelay delay)
-                  go $! n+1
-                Nothing -> throwM e
-            False -> throwM e
 
-      go n = f n `catches` map (transHandler n . ($ n)) hs
-
-
+-------------------------------------------------------------------------------
+-- | Helper function for constructing handler functions of the form required
+-- by 'recovering'.
+logRetries
+    :: (Monad m, Show e, Exception e)
+    => (e -> m Bool)
+    -- ^ Test for whether action is to be retried
+    -> (String -> m ())
+    -- ^ How to report the generated warning message.
+    -> Int
+    -- ^ Retry number
+    -> Handler m Bool
+logRetries f report n = Handler $ \ e -> do
+    res <- f e
+    let msg = "[retry:" <> show n <> "] Encountered " <> show e <> ". " <>
+              if res then "Retrying." else "Crashing."
+    report msg
+    return res
 
 
                               ------------------
