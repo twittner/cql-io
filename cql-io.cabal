@@ -3,7 +3,7 @@ version:              0.14.1
 synopsis:             Cassandra CQL client.
 stability:            experimental
 license:              OtherLicense
-license-file:         LICENSE
+license-file:         LICENSE.txt
 author:               Toralf Wittner
 maintainer:           Toralf Wittner <tw@dtex.org>
 copyright:            (C) 2014-2015 Toralf Wittner
@@ -15,7 +15,6 @@ cabal-version:        >= 1.10
 extra-source-files:   README.asciidoc
                       CHANGELOG.txt
                       AUTHORS.txt
-                      LICENSE.txt
 
 description:
     CQL Cassandra driver supporting native protocol versions 2 and 3.
