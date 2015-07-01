@@ -2,9 +2,10 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+{-# LANGUAGE CPP                        #-}
 {-# LANGUAGE DeriveDataTypeable         #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE GADTs                      #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE StandaloneDeriving         #-}
 
@@ -37,6 +38,9 @@ instance Show InetAddr where
         let i = fromIntegral p :: Int in
         shows (fromHostAddress6 a) . showString ":" . shows i $ ""
     show (InetAddr (SockAddrUnix unix)) = unix
+#if MIN_VERSION_network(2,6,1)
+    show (InetAddr (SockAddrCan int32)) = show int32
+#endif
 
 instance ToBytes InetAddr where
     bytes (InetAddr (SockAddrInet p a)) =
@@ -46,6 +50,9 @@ instance ToBytes InetAddr where
         let i = fromIntegral p :: Int in
         show (fromHostAddress6 a) +++ val ":" +++ i
     bytes (InetAddr (SockAddrUnix unix)) = bytes unix
+#if MIN_VERSION_network(2,6,1)
+    bytes (InetAddr (SockAddrCan int32)) = bytes int32
+#endif
 
 ip2inet :: PortNumber -> IP -> InetAddr
 ip2inet p (IPv4 a) = InetAddr $ SockAddrInet p (toHostAddress a)
