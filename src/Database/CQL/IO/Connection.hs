@@ -3,6 +3,7 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 {-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
@@ -158,6 +159,9 @@ mkSock (InetAddr a) = socket (familyOf a) Stream defaultProtocol
     familyOf (SockAddrInet  _ _)     = AF_INET
     familyOf (SockAddrInet6 _ _ _ _) = AF_INET6
     familyOf (SockAddrUnix  _)       = AF_UNIX
+#if MIN_VERSION_network(2,6,1)
+    familyOf (SockAddrCan   _      ) = AF_CAN
+#endif
 
 ping :: MonadIO m => InetAddr -> m Bool
 ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
