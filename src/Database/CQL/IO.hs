@@ -106,6 +106,7 @@ module Database.CQL.IO
     , query1
     , write
     , schema
+    , trans
 
     , Page      (..)
     , emptyPage
@@ -196,6 +197,14 @@ query1 q p = listToMaybe <$> query q p
 -- | Run a CQL insert/update query against a Cassandra node.
 write :: (MonadClient m, Tuple a, RunQ q) => q W a () -> QueryParams a -> m ()
 write q p = void $ runQ q p
+
+-- | Run a CQL insert/update query as a \"lightweight transaction\" against a Cassandra node.
+trans :: (MonadClient m, Tuple a, RunQ q) => q W a Row -> QueryParams a -> m [Row]
+trans q p = do
+    r <- runQ q p
+    case r of
+        RsResult _ (RowsResult _ b) -> return b
+        _                           -> throwM UnexpectedResponse
 
 -- | Run a CQL schema query against a Cassandra node.
 schema :: (MonadClient m, Tuple a, RunQ q) => q S a () -> QueryParams a -> m (Maybe SchemaChange)
