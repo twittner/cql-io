@@ -27,7 +27,6 @@ import Database.CQL.IO.Types
 import Foreign.C.Types (CInt (..))
 import Network.Socket hiding (Stream, Socket, connect, close, recv, send, shutdown)
 import Network.Socket.ByteString.Lazy (sendAll)
-import OpenSSL
 import OpenSSL.Session (SSL, SSLContext)
 import System.Logger (ToBytes (..))
 import System.Timeout
@@ -56,7 +55,7 @@ open to a ctx = do
             throwM (ConnectTimeout a)
         case ctx of
             Nothing  -> return (Stream s)
-            Just set -> withOpenSSL $ do
+            Just set -> do
                 c <- SSL.connection set s
                 SSL.connect c
                 return (Tls s c)
