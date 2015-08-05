@@ -16,6 +16,7 @@ module Database.CQL.IO.Connection.Socket
     , shutdown
     ) where
 
+import Control.Applicative
 import Control.Monad
 import Control.Monad.Catch
 import Data.ByteString (ByteString)
@@ -30,6 +31,7 @@ import OpenSSL
 import OpenSSL.Session (SSL, SSLContext)
 import System.Logger (ToBytes (..))
 import System.Timeout
+import Prelude
 
 import qualified Data.ByteString            as Bytes
 import qualified Data.ByteString.Lazy       as Lazy
