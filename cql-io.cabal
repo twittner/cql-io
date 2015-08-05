@@ -60,6 +60,7 @@ library
         Database.CQL.IO.Cluster.Host
         Database.CQL.IO.Cluster.Policies
         Database.CQL.IO.Connection
+        Database.CQL.IO.Connection.Socket
         Database.CQL.IO.Hexdump
         Database.CQL.IO.Jobs
         Database.CQL.IO.Pool
@@ -84,6 +85,7 @@ library
         , exceptions         >= 0.4     && < 1.0
         , hashable           >= 1.2     && < 2.0
         , iproute            >= 1.3     && < 2.0
+        , HsOpenSSL          >= 0.11    && < 1.0
         , lens               >= 4.4     && < 5.0
         , monad-control      >= 0.3     && < 2.0
         , mtl                >= 2.1     && < 2.5
