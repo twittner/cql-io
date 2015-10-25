@@ -2,8 +2,6 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE BangPatterns        #-}
-{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
@@ -32,6 +30,7 @@ module Database.CQL.IO.Connection
     , compression
     , defKeyspace
     , maxRecvBuffer
+    , tlsContext
     ) where
 
 import Control.Applicative
@@ -44,15 +43,15 @@ import Control.Lens ((^.), makeLenses, view)
 import Control.Monad
 import Control.Monad.Catch
 import Control.Monad.IO.Class
-import Data.ByteString.Builder
 import Data.ByteString.Lazy (ByteString)
 import Data.Int
-import Data.Maybe (isJust, fromMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Monoid
 import Data.Text.Lazy (fromStrict)
 import Data.Unique
 import Data.Vector (Vector, (!))
 import Database.CQL.Protocol
+import Database.CQL.IO.Connection.Socket (Socket)
 import Database.CQL.IO.Hexdump
 import Database.CQL.IO.Protocol
 import Database.CQL.IO.Signal hiding (connect)
@@ -60,23 +59,20 @@ import Database.CQL.IO.Sync (Sync)
 import Database.CQL.IO.Types
 import Database.CQL.IO.Tickets (Pool, toInt, markAvailable)
 import Database.CQL.IO.Timeouts (TimeoutManager, withTimeout)
-import Foreign.C.Types (CInt (..))
-import Network
-import Network.Socket hiding (connect, close, recv, send)
-import Network.Socket.ByteString.Lazy (sendAll)
+import Network.Socket hiding (Socket, close, connect, send)
+import OpenSSL.Session (SSLContext)
 import System.IO (nativeNewline, Newline (..))
 import System.Logger hiding (Settings, close, defSettings, settings)
 import System.Timeout
 import Prelude
 
-import qualified Data.ByteString            as B
-import qualified Data.ByteString.Lazy       as L
-import qualified Data.ByteString.Lazy.Char8 as Char8
-import qualified Data.Vector                as Vector
-import qualified Database.CQL.IO.Sync       as Sync
-import qualified Database.CQL.IO.Tickets    as Tickets
-import qualified Network.Socket             as S
-import qualified Network.Socket.ByteString  as NB
+import qualified Data.ByteString.Lazy              as L
+import qualified Data.ByteString.Lazy.Char8        as Char8
+import qualified Data.Vector                       as Vector
+import qualified Database.CQL.IO.Connection.Socket as Socket
+import qualified Database.CQL.IO.Sync              as Sync
+import qualified Database.CQL.IO.Tickets           as Tickets
+import qualified Network.Socket                    as S
 
 data ConnectionSettings = ConnectionSettings
     { _connectTimeout  :: !Milliseconds
@@ -86,6 +82,7 @@ data ConnectionSettings = ConnectionSettings
     , _compression     :: !Compression
     , _defKeyspace     :: !(Maybe Keyspace)
     , _maxRecvBuffer   :: !Int
+    , _tlsContext      :: !(Maybe SSLContext)
     }
 
 type Streams = Vector (Sync (Header, ByteString))
@@ -116,7 +113,7 @@ instance Show Connection where
     show = Char8.unpack . eval . bytes
 
 instance ToBytes Connection where
-    bytes c = bytes (c^.address) +++ val "#" +++ fd (c^.sock)
+    bytes c = bytes (c^.address) +++ val "#" +++ c^.sock
 
 defSettings :: ConnectionSettings
 defSettings =
@@ -127,6 +124,7 @@ defSettings =
                        noCompression -- compression
                        Nothing       -- keyspace
                        16384         -- receive buffer size
+                       Nothing       -- no tls by default
 
 resolve :: String -> PortNumber -> IO [InetAddr]
 resolve host port =
@@ -136,15 +134,7 @@ resolve host port =
 
 connect :: MonadIO m => ConnectionSettings -> TimeoutManager -> Version -> Logger -> InetAddr -> m Connection
 connect t m v g a = liftIO $ do
-    c <- bracketOnError (mkSock a) S.close $ \s -> do
-        ok <- timeout (ms (t^.connectTimeout) * 1000) (S.connect s (sockAddr a))
-        unless (isJust ok) $
-            throwM (ConnectTimeout a)
-        open s
-    validateSettings c `onException` close c
-    return c
-  where
-    open s = do
+    c <- bracketOnError (Socket.open (t^.connectTimeout) a (t^.tlsContext)) Socket.close $ \s -> do
         tck <- Tickets.pool (t^.maxStreams)
         syn <- Vector.replicateM (t^.maxStreams) Sync.create
         lck <- newMVar ()
@@ -152,19 +142,11 @@ connect t m v g a = liftIO $ do
         sig <- signal
         rdr <- async (readLoop v g t tck a s syn sig sta lck)
         Connection t a m v s sta syn lck rdr tck g sig <$> newUnique
-
-mkSock :: InetAddr -> IO Socket
-mkSock (InetAddr a) = socket (familyOf a) Stream defaultProtocol
-  where
-    familyOf (SockAddrInet  _ _)     = AF_INET
-    familyOf (SockAddrInet6 _ _ _ _) = AF_INET6
-    familyOf (SockAddrUnix  _)       = AF_UNIX
-#if MIN_VERSION_network(2,6,1)
-    familyOf (SockAddrCan   _      ) = AF_CAN
-#endif
+    validateSettings c `onException` close c
+    return c
 
 ping :: MonadIO m => InetAddr -> m Bool
-ping a = liftIO $ bracket (mkSock a) S.close $ \s ->
+ping a = liftIO $ bracket (Socket.mkSock a) S.close $ \s ->
     fromMaybe False <$> timeout 5000000
         ((S.connect s (sockAddr a) >> return True) `catchAll` const (return False))
 
@@ -201,8 +183,8 @@ readLoop v g set tck i sck syn s sref wlck =
             Tickets.close (ConnectionClosed i) tck
             Vector.mapM_ (Sync.close (ConnectionClosed i)) syn
             void $ forkIOWithUnmask $ \unmask -> unmask $ do
-                shutdown sck ShutdownReceive
-                withMVar wlck (const $ S.close sck)
+                Socket.shutdown sck ShutdownReceive
+                withMVar wlck (const $ Socket.close sck)
 
     logException :: SomeException -> IO ()
     logException e = case fromException e of
@@ -225,7 +207,7 @@ request c f = send >>= receive
         withMVar (c^.wLock) $ const $ do
             isOpen <- readTVarIO (c^.status)
             if isOpen then
-                sendAll (c^.sock) req
+                Socket.send (c^.sock) req
             else
                 throwM $ ConnectionClosed (c^.address)
         return i
@@ -240,7 +222,7 @@ request c f = send >>= receive
 
 readSocket :: Version -> Logger -> InetAddr -> Socket -> Int -> IO (Header, ByteString)
 readSocket v g i s n = do
-    b <- recv n i s (if v == V3 then 9 else 8)
+    b <- Socket.recv n i s (if v == V3 then 9 else 8)
     h <- case header v b of
             Left  e -> throwM $ InternalError ("response header reading: " ++ e)
             Right h -> return h
@@ -248,24 +230,12 @@ readSocket v g i s n = do
         RqHeader -> throwM $ InternalError "unexpected request header"
         RsHeader -> do
             let len = lengthRepr (bodyLength h)
-            x <- recv n i s (fromIntegral len)
-            trace g $ msg (i +++ val "#" +++ fd s)
+            x <- Socket.recv n i s (fromIntegral len)
+            trace g $ msg (i +++ val "#" +++ s)
                 ~~ "stream" .= fromStreamId (streamId h)
                 ~~ "type"   .= val "response"
                 ~~ msg' (hexdump $ L.take 160 (b <> x))
             return (h, x)
-
-recv :: Int -> InetAddr -> Socket -> Int -> IO ByteString
-recv _ _ _ 0 = return L.empty
-recv x i s n = toLazyByteString <$> go n mempty
-  where
-    go !k !bb = do
-        a <- NB.recv s (k `min` x)
-        when (B.null a) $
-            throwM (ConnectionClosed i)
-        let b = bb <> byteString a
-        let m = k - B.length a
-        if m > 0 then go m b else return b
 
 -----------------------------------------------------------------------------
 -- Operations
@@ -330,9 +300,6 @@ query c cons q p = liftIO $ do
     params = QueryParams cons False p Nothing Nothing Nothing
 
 -- logging helpers:
-
-fd :: Socket -> Int32
-fd !s = let CInt !n = fdSocket s in n
 
 msg' :: ByteString -> Msg -> Msg
 msg' x = msg $ case nativeNewline of

@@ -20,6 +20,7 @@ import Database.CQL.IO.Connection as C
 import Database.CQL.IO.Pool as P
 import Database.CQL.IO.Types (Milliseconds (..))
 import Network.Socket (PortNumber (..))
+import OpenSSL.Session (SSLContext)
 import Prelude
 
 data PrepareStrategy
@@ -186,6 +187,12 @@ setRetrySettings v = set retrySettings v
 -- and the value set here.
 setMaxRecvBuffer :: Int -> Settings -> Settings
 setMaxRecvBuffer v = set (connSettings.maxRecvBuffer) v
+
+-- | Set a fully configured SSL context.
+--
+-- This will make client server queries use TLS.
+setSSLContext :: SSLContext -> Settings -> Settings
+setSSLContext v = set (connSettings.tlsContext) (Just v)
 
 -----------------------------------------------------------------------------
 -- Retry Settings
