@@ -1,5 +1,5 @@
 name:                 cql-io
-version:              0.14.5
+version:              0.15.0
 synopsis:             Cassandra CQL client.
 stability:            experimental
 license:              MPL-2.0
@@ -39,6 +39,9 @@ description:
     * /Prepared queries/. Prepared queries are an optimisation which parse
     and prepare a query only once on Cassandra nodes but execute it many
     times with different concrete values.
+    .
+    * /TLS support/. Client to node communication can optionally use transport
+    layer security (using HsOpenSSL).
 
 source-repository head
     type:             git

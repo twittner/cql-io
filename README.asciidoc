@@ -29,3 +29,8 @@ Support for default retry settings as well as local overrides per query.
 Prepared queries are an optimisation which parse and prepare a query only
 once on Cassandra nodes but execute it many times with different concrete
 values.
+
+.TLS support
+
+Client to node communication can optionally use transport layer security
+(using HsOpenSSL).
