@@ -73,6 +73,7 @@ import Database.CQL.IO.Timeouts (TimeoutManager)
 import Database.CQL.IO.Types
 import Database.CQL.Protocol hiding (Map)
 import Network.Socket (SockAddr (..), PortNumber)
+import OpenSSL.Session (SomeSSLException)
 import System.Logger.Class hiding (Settings, new, settings, create)
 import Prelude
 
@@ -254,9 +255,10 @@ mkRequest fn a = do
             Unavailable  {} -> return True
             ServerError  {} -> return True
             _               -> return False
-        , const $ Handler $ \(_ :: ConnectionError) -> return True
-        , const $ Handler $ \(_ :: IOException)     -> return True
-        , const $ Handler $ \(_ :: HostError)       -> return True
+        , const $ Handler $ \(_ :: ConnectionError)  -> return True
+        , const $ Handler $ \(_ :: IOException)      -> return True
+        , const $ Handler $ \(_ :: HostError)        -> return True
+        , const $ Handler $ \(_ :: SomeSSLException) -> return True
         ]
 
 -- | Invoke 'request1' up to @n@ times with different hosts if no
@@ -292,8 +294,9 @@ request1 h a s = do
         r `seq` return (h, r)
 
     handlers =
-        [ Handler $ \(e :: ConnectionError) -> onConnectionError h e >> throwM e
-        , Handler $ \(e :: IOException)     -> onConnectionError h e >> throwM e
+        [ Handler $ \(e :: ConnectionError)  -> onConnectionError h e >> throwM e
+        , Handler $ \(e :: IOException)      -> onConnectionError h e >> throwM e
+        , Handler $ \(e :: SomeSSLException) -> onConnectionError h e >> throwM e
         ]
 
 -- | Execute the given request. If an 'Unprepared' error is returned, this
@@ -555,9 +558,10 @@ onConnectionError h exc = do
     reconnectPolicy = capDelay 5000000 (exponentialBackoff 5000)
 
     reconnectHandlers =
-        [ const (Handler $ \(_ :: IOException)     -> return True)
-        , const (Handler $ \(_ :: ConnectionError) -> return True)
-        , const (Handler $ \(_ :: HostError)       -> return True)
+        [ const (Handler $ \(_ :: IOException)      -> return True)
+        , const (Handler $ \(_ :: ConnectionError)  -> return True)
+        , const (Handler $ \(_ :: HostError)        -> return True)
+        , const (Handler $ \(_ :: SomeSSLException) -> return True)
         ]
 
 replaceControl :: InetAddr -> Client ()
