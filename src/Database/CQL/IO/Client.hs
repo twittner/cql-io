@@ -62,6 +62,7 @@ import Data.Word
 import Database.CQL.IO.Cluster.Discovery as Discovery
 import Database.CQL.IO.Cluster.Host
 import Database.CQL.IO.Cluster.Policies
+import Database.CQL.IO.Cluster.Token (Token)
 import Database.CQL.IO.Connection hiding (request)
 import Database.CQL.IO.Jobs (Jobs)
 import Database.CQL.IO.Pool
@@ -598,7 +599,7 @@ onCqlEvent x = do
             ctrl <- readTVarIO' (s^.control)
             let a = InetAddr $ mapPort prt sa
             let c = ctrl^.connection
-            h    <- fromMaybe (Host a "" "") . find ((a == ) . view hostAddr) <$> discoverPeers' ctx c
+            h    <- fromMaybe (Host a "" "" mempty) . find ((a == ) . view hostAddr) <$> discoverPeers' ctx c
             okay <- liftIO $ acceptable pol h
             when okay $ do
                 p <- mkPool ctx (h^.hostAddr)
@@ -633,11 +634,12 @@ prepareAllQueries h = do
 -- Utilities
 
 peer2Host :: PortNumber -> Peer -> Host
-peer2Host i p = Host (ip2inet i (peerRPC p)) (peerDC p) (peerRack p)
+peer2Host i p =
+    Host (ip2inet i (peerRPC p)) (peerDC p) (peerRack p) (fromSet $ peerTokens p)
 
-local2Host :: InetAddr -> Maybe (Text, Text) -> Host
-local2Host i (Just (dc, rk)) = Host i dc rk
-local2Host i Nothing         = Host i "" ""
+local2Host :: InetAddr -> Maybe (Text, Text, Set Token) -> Host
+local2Host i (Just (dc, rk, tk)) = Host i dc rk (fromSet tk)
+local2Host i Nothing             = Host i "" "" mempty
 
 allEventTypes :: [EventType]
 allEventTypes = [TopologyChangeEvent, StatusChangeEvent, SchemaChangeEvent]

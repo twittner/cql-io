@@ -50,6 +50,7 @@ source-repository head
 library
     default-language: Haskell2010
     hs-source-dirs:   src
+    c-sources:        cbits/cbits.c
     ghc-options:      -Wall -O2 -fwarn-tabs
 
     exposed-modules:
@@ -61,7 +62,9 @@ library
         Database.CQL.IO.Client
         Database.CQL.IO.Cluster.Discovery
         Database.CQL.IO.Cluster.Host
+        Database.CQL.IO.Cluster.MurmurHash
         Database.CQL.IO.Cluster.Policies
+        Database.CQL.IO.Cluster.Token
         Database.CQL.IO.Connection
         Database.CQL.IO.Connection.Socket
         Database.CQL.IO.Hexdump

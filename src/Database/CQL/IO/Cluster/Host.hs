@@ -10,6 +10,7 @@ import Control.Lens ((^.), Lens')
 import Data.ByteString.Lazy.Char8 (unpack)
 import Data.Text (Text)
 import Database.CQL.IO.Types (InetAddr)
+import Database.CQL.IO.Cluster.Token
 import System.Logger.Message
 
 -- | This event will be passed to a 'Policy' to inform it about
@@ -25,22 +26,28 @@ data Host = Host
     { _hostAddr   :: !InetAddr
     , _dataCentre :: !Text
     , _rack       :: !Text
+    , _tokens     :: ![Token]
     } deriving (Eq, Ord)
 
 -- | The IP address and port number of this host.
 hostAddr :: Lens' Host InetAddr
-hostAddr f ~(Host a c r) = fmap (\x -> Host x c r) (f a)
+hostAddr f ~(Host a c r t) = fmap (\x -> Host x c r t) (f a)
 {-# INLINE hostAddr #-}
 
 -- | The data centre name (may be an empty string).
 dataCentre :: Lens' Host Text
-dataCentre f ~(Host a c r) = fmap (\x -> Host a x r) (f c)
+dataCentre f ~(Host a c r t) = fmap (\x -> Host a x r t) (f c)
 {-# INLINE dataCentre #-}
 
 -- | The rack name (may be an empty string).
 rack :: Lens' Host Text
-rack f ~(Host a c r) = fmap (\x -> Host a c x) (f r)
+rack f ~(Host a c r t) = fmap (\x -> Host a c x t) (f r)
 {-# INLINE rack #-}
+
+-- | The token range this host owns.
+tokens :: Lens' Host [Token]
+tokens f ~(Host a c r t) = fmap (\x -> Host a c r x) (f t)
+{-# INLINE tokens #-}
 
 instance Show Host where
     show = unpack . eval . bytes
