@@ -62,7 +62,7 @@ import Data.Word
 import Database.CQL.IO.Cluster.Discovery as Discovery
 import Database.CQL.IO.Cluster.Host
 import Database.CQL.IO.Cluster.Policies
-import Database.CQL.IO.Cluster.Token (Token)
+import Database.CQL.IO.Cluster.Token (Token, fromSortedList)
 import Database.CQL.IO.Connection hiding (request)
 import Database.CQL.IO.Jobs (Jobs)
 import Database.CQL.IO.Pool
@@ -635,10 +635,12 @@ prepareAllQueries h = do
 
 peer2Host :: PortNumber -> Peer -> Host
 peer2Host i p =
-    Host (ip2inet i (peerRPC p)) (peerDC p) (peerRack p) (fromSet $ peerTokens p)
+    let tks = fromSortedList . fromSet . peerTokens $ p
+    in
+        Host (ip2inet i (peerRPC p)) (peerDC p) (peerRack p) tks
 
 local2Host :: InetAddr -> Maybe (Text, Text, Set Token) -> Host
-local2Host i (Just (dc, rk, tk)) = Host i dc rk (fromSet tk)
+local2Host i (Just (dc, rk, tk)) = Host i dc rk (fromSortedList $ fromSet tk)
 local2Host i Nothing             = Host i "" "" mempty
 
 allEventTypes :: [EventType]

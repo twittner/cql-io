@@ -8,6 +8,7 @@ module Database.CQL.IO.Cluster.Host where
 
 import Control.Lens ((^.), Lens')
 import Data.ByteString.Lazy.Char8 (unpack)
+import Data.Set (Set)
 import Data.Text (Text)
 import Database.CQL.IO.Types (InetAddr)
 import Database.CQL.IO.Cluster.Token
@@ -26,7 +27,7 @@ data Host = Host
     { _hostAddr   :: !InetAddr
     , _dataCentre :: !Text
     , _rack       :: !Text
-    , _tokens     :: ![Token]
+    , _tokens     :: !(Set TokenRange)
     } deriving (Eq, Ord)
 
 -- | The IP address and port number of this host.
@@ -45,7 +46,7 @@ rack f ~(Host a c r t) = fmap (\x -> Host a c x t) (f r)
 {-# INLINE rack #-}
 
 -- | The token range this host owns.
-tokens :: Lens' Host [Token]
+tokens :: Lens' Host (Set TokenRange)
 tokens f ~(Host a c r t) = fmap (\x -> Host a c r x) (f t)
 {-# INLINE tokens #-}
 
