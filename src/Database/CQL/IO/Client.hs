@@ -51,7 +51,7 @@ import Control.Monad.Trans.Control (MonadBaseControl (..))
 #if MIN_VERSION_transformers(0,4,0)
 import Control.Monad.Trans.Except
 #endif
-import Control.Retry
+import Control.Retry hiding (retryPolicy)
 import Data.Foldable (for_, foldrM)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -227,7 +227,7 @@ mkRequest :: (Tuple a, Tuple b)
 mkRequest fn a = do
     s <- ask
     recovering (s^.context.settings.retrySettings.retryPolicy) recoverFrom $ \i -> do
-        r <- if i == 0 then fn a s else fn (newRequest s) (adjust s)
+        r <- if rsIterNumber i == 0 then fn a s else fn (newRequest s) (adjust s)
         maybe (throwM HostsBusy) return r
   where
     adjust s =

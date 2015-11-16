@@ -1,3 +1,7 @@
+0.16.0
+------
+- Update to `retry` 0.7
+
 0.15.0
 ------
 - Add experimental TLS support.
