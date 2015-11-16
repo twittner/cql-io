@@ -8,7 +8,7 @@
 module Database.CQL.IO.Settings where
 
 import Control.Lens hiding ((<|))
-import Control.Retry
+import Control.Retry hiding (retryPolicy)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import Data.Monoid
 import Data.Time
@@ -23,13 +23,15 @@ import Network.Socket (PortNumber (..))
 import OpenSSL.Session (SSLContext)
 import Prelude
 
+import {-# SOURCE #-} Database.CQL.IO.Client
+
 data PrepareStrategy
     = EagerPrepare -- ^ cluster-wide preparation
     | LazyPrepare  -- ^ on-demand per node preparation
     deriving (Eq, Ord, Show)
 
 data RetrySettings = RetrySettings
-    { _retryPolicy        :: !RetryPolicy
+    { _retryPolicy        :: !(RetryPolicyM Client)
     , _reducedConsistency :: !(Maybe Consistency)
     , _sendTimeoutChange  :: !Milliseconds
     , _recvTimeoutChange  :: !Milliseconds
@@ -199,7 +201,7 @@ setSSLContext v = set (connSettings.tlsContext) (Just v)
 
 -- | Never retry.
 noRetry :: RetrySettings
-noRetry = RetrySettings (RetryPolicy $ const Nothing) Nothing 0 0
+noRetry = RetrySettings (RetryPolicyM $ const (return Nothing)) Nothing 0 0
 
 -- | Forever retry immediately.
 retryForever :: RetrySettings
@@ -243,7 +245,7 @@ adjustSendTimeout v = set sendTimeoutChange (Ms $ round (1000 * v))
 adjustResponseTimeout :: NominalDiffTime -> RetrySettings -> RetrySettings
 adjustResponseTimeout v = set recvTimeoutChange (Ms $ round (1000 * v))
 
-setDelayFn :: (Int -> RetryPolicy)
+setDelayFn :: (Int -> RetryPolicyM Client)
            -> NominalDiffTime
            -> NominalDiffTime
            -> RetrySettings
