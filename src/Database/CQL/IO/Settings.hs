@@ -3,12 +3,13 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes        #-}
 {-# LANGUAGE TemplateHaskell   #-}
 
 module Database.CQL.IO.Settings where
 
 import Control.Lens hiding ((<|))
-import Control.Retry
+import Control.Retry hiding (retryPolicy)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import Data.Monoid
 import Data.Time
@@ -29,7 +30,7 @@ data PrepareStrategy
     deriving (Eq, Ord, Show)
 
 data RetrySettings = RetrySettings
-    { _retryPolicy        :: !RetryPolicy
+    { _retryPolicy        :: !(forall m. Monad m => RetryPolicyM m)
     , _reducedConsistency :: !(Maybe Consistency)
     , _sendTimeoutChange  :: !Milliseconds
     , _recvTimeoutChange  :: !Milliseconds
@@ -199,7 +200,7 @@ setSSLContext v = set (connSettings.tlsContext) (Just v)
 
 -- | Never retry.
 noRetry :: RetrySettings
-noRetry = RetrySettings (RetryPolicy $ const Nothing) Nothing 0 0
+noRetry = RetrySettings (RetryPolicyM $ const (return Nothing)) Nothing 0 0
 
 -- | Forever retry immediately.
 retryForever :: RetrySettings
@@ -207,7 +208,8 @@ retryForever = RetrySettings mempty Nothing 0 0
 
 -- | Limit number of retries.
 maxRetries :: Word -> RetrySettings -> RetrySettings
-maxRetries v = over retryPolicy (mappend (limitRetries $ fromIntegral v))
+maxRetries v s =
+    s { _retryPolicy = limitRetries (fromIntegral v) <> _retryPolicy s }
 
 -- | When retrying a (batch-) query, change consistency to the given value.
 adjustConsistency :: Consistency -> RetrySettings -> RetrySettings
@@ -248,5 +250,8 @@ setDelayFn :: (Int -> RetryPolicy)
            -> NominalDiffTime
            -> RetrySettings
            -> RetrySettings
-setDelayFn d v w = over retryPolicy
-    (mappend $ capDelay (round (1000000 * w)) $ d (round (1000000 * v)))
+setDelayFn f v w s =
+    let a = round (1000000 * w)
+        b = round (1000000 * v)
+    in
+        s { _retryPolicy = capDelay a (f b) <> _retryPolicy s }
