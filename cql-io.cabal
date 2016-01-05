@@ -1,12 +1,12 @@
 name:                 cql-io
-version:              0.14.5
+version:              0.15.2
 synopsis:             Cassandra CQL client.
 stability:            experimental
 license:              MPL-2.0
 license-file:         LICENSE.txt
 author:               Toralf Wittner
 maintainer:           Toralf Wittner <tw@dtex.org>
-copyright:            (C) 2014-2015 Toralf Wittner
+copyright:            (C) 2014-2016 Toralf Wittner
 homepage:             https://github.com/twittner/cql-io/
 bug-reports:          https://github.com/twittner/cql-io/issues
 category:             Database
@@ -39,6 +39,9 @@ description:
     * /Prepared queries/. Prepared queries are an optimisation which parse
     and prepare a query only once on Cassandra nodes but execute it many
     times with different concrete values.
+    .
+    * /TLS support/. Client to node communication can optionally use transport
+    layer security (using HsOpenSSL).
 
 source-repository head
     type:             git
@@ -53,13 +56,13 @@ library
         Database.CQL.IO
 
     other-modules:
-        Control.Retry
         Database.CQL.IO.Batch
         Database.CQL.IO.Client
         Database.CQL.IO.Cluster.Discovery
         Database.CQL.IO.Cluster.Host
         Database.CQL.IO.Cluster.Policies
         Database.CQL.IO.Connection
+        Database.CQL.IO.Connection.Socket
         Database.CQL.IO.Hexdump
         Database.CQL.IO.Jobs
         Database.CQL.IO.Pool
@@ -73,7 +76,7 @@ library
         Database.CQL.IO.Types
 
     build-depends:
-          async              == 2.0.*
+          async              >= 2.0
         , auto-update        == 0.1.*
         , base               >= 4.7     && < 5.0
         , bytestring         >= 0.10    && < 1.0
@@ -84,10 +87,12 @@ library
         , exceptions         >= 0.4     && < 1.0
         , hashable           >= 1.2     && < 2.0
         , iproute            >= 1.3     && < 2.0
+        , HsOpenSSL          >= 0.11    && < 1.0
         , lens               >= 4.4     && < 5.0
         , monad-control      >= 0.3     && < 2.0
         , mtl                >= 2.1     && < 2.5
         , mwc-random         >= 0.13    && < 0.14
+        , retry              >= 0.7     && < 1.0
         , network            >= 2.4     && < 3.0
         , semigroups         >= 0.15    && < 0.20
         , stm                >= 2.4     && < 3.0

@@ -51,7 +51,7 @@ import Control.Monad.Trans.Control (MonadBaseControl (..))
 #if MIN_VERSION_transformers(0,4,0)
 import Control.Monad.Trans.Except
 #endif
-import Control.Retry
+import Control.Retry (recovering, capDelay, exponentialBackoff, rsIterNumber)
 import Data.Foldable (for_, foldrM)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -73,6 +73,7 @@ import Database.CQL.IO.Timeouts (TimeoutManager)
 import Database.CQL.IO.Types
 import Database.CQL.Protocol hiding (Map)
 import Network.Socket (SockAddr (..), PortNumber)
+import OpenSSL.Session (SomeSSLException)
 import System.Logger.Class hiding (Settings, new, settings, create)
 import Prelude
 
@@ -226,7 +227,9 @@ mkRequest :: (Tuple a, Tuple b)
 mkRequest fn a = do
     s <- ask
     recovering (s^.context.settings.retrySettings.retryPolicy) recoverFrom $ \i -> do
-        r <- if i == 0 then fn a s else fn (newRequest s) (adjust s)
+        r <- if rsIterNumber i == 0
+                 then fn a s
+                 else fn (newRequest s) (adjust s)
         maybe (throwM HostsBusy) return r
   where
     adjust s =
@@ -254,9 +257,10 @@ mkRequest fn a = do
             Unavailable  {} -> return True
             ServerError  {} -> return True
             _               -> return False
-        , const $ Handler $ \(_ :: ConnectionError) -> return True
-        , const $ Handler $ \(_ :: IOException)     -> return True
-        , const $ Handler $ \(_ :: HostError)       -> return True
+        , const $ Handler $ \(_ :: ConnectionError)  -> return True
+        , const $ Handler $ \(_ :: IOException)      -> return True
+        , const $ Handler $ \(_ :: HostError)        -> return True
+        , const $ Handler $ \(_ :: SomeSSLException) -> return True
         ]
 
 -- | Invoke 'request1' up to @n@ times with different hosts if no
@@ -292,8 +296,9 @@ request1 h a s = do
         r `seq` return (h, r)
 
     handlers =
-        [ Handler $ \(e :: ConnectionError) -> onConnectionError h e >> throwM e
-        , Handler $ \(e :: IOException)     -> onConnectionError h e >> throwM e
+        [ Handler $ \(e :: ConnectionError)  -> onConnectionError h e >> throwM e
+        , Handler $ \(e :: IOException)      -> onConnectionError h e >> throwM e
+        , Handler $ \(e :: SomeSSLException) -> onConnectionError h e >> throwM e
         ]
 
 -- | Execute the given request. If an 'Unprepared' error is returned, this
@@ -555,9 +560,10 @@ onConnectionError h exc = do
     reconnectPolicy = capDelay 5000000 (exponentialBackoff 5000)
 
     reconnectHandlers =
-        [ const (Handler $ \(_ :: IOException)     -> return True)
-        , const (Handler $ \(_ :: ConnectionError) -> return True)
-        , const (Handler $ \(_ :: HostError)       -> return True)
+        [ const (Handler $ \(_ :: IOException)      -> return True)
+        , const (Handler $ \(_ :: ConnectionError)  -> return True)
+        , const (Handler $ \(_ :: HostError)        -> return True)
+        , const (Handler $ \(_ :: SomeSSLException) -> return True)
         ]
 
 replaceControl :: InetAddr -> Client ()
