@@ -1,8 +1,14 @@
+0.15.2
+------
+- Update `async` dependency
+
+0.15.1
+------
+- Use `retry >= 0.7` instead of internal module
+
 0.15.0
 ------
 - Add experimental TLS support
-- Update `async` dependency
-- Use `retry >= 0.7` instead of internal module
 
 0.14.5
 ------
