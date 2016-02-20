@@ -7,7 +7,7 @@
 -- <http://hackage.haskell.org/package/tinylog tinylog> for its logging
 -- output and expects a 'Logger'.
 --
--- For example:
+-- For example (here using the @OverloadedStrings@ extension) :
 --
 -- @
 -- > import Data.Text (Text)
@@ -23,6 +23,7 @@
 -- [Identity "3.2.0"]
 -- > shutdown c
 -- @
+--
 --
 -- __Note on prepared statements__
 --
